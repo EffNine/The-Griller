@@ -1,0 +1,21 @@
+[package]
+name = "griller-self-grill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "M7: deterministic self-audit of The Griller's own decisions"
+
+[dependencies]
+griller-core = { path = "../griller-core" }
+griller-adjudicate = { path = "../griller-adjudicate" }
+griller-policy = { path = "../griller-policy" }
+griller-context = { path = "../griller-context" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

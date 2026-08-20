@@ -1,0 +1,11 @@
+[package]
+name = "griller-adjudicate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M2 claim normalization, evidence matching, contradiction checking and deterministic epistemic status for The Griller."
+
+[dependencies]
+griller-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

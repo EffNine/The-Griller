@@ -1,0 +1,6 @@
+[package]
+name = "atlas-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Legacy adapter that reads from the Atlas fact store."

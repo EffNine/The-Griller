@@ -1,0 +1,12 @@
+[package]
+name = "griller-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure domain/value types, deterministic serialization and hashing for The Griller."
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+regex = "1.13"

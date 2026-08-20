@@ -1,0 +1,18 @@
+[package]
+name = "griller-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Execution backend, collectors, worktree isolation and evidence store for The Griller."
+
+[dependencies]
+griller-core = { workspace = true }
+griller-context = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+regex = "1.10"
+
+[dev-dependencies]
+griller-policy = { workspace = true }

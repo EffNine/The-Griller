@@ -1,0 +1,8 @@
+[package]
+name = "basic-rust-demo"
+version = "0.1.0"
+edition = "2021"
+
+# Keep this fixture out of the parent workspace so it is a self-contained
+# package usable by the Griller's own auto-collect commands.
+[workspace]

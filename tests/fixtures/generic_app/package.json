@@ -1,0 +1,6 @@
+{
+  "name": "shop-app",
+  "version": "1.0.0",
+  "description": "A generic web application.",
+  "main": "src/index.js"
+}

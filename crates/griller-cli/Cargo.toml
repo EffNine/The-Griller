@@ -1,0 +1,24 @@
+[package]
+name = "griller-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for The Griller foundation (M0/M1)."
+
+[[bin]]
+name = "griller"
+path = "src/main.rs"
+
+[dependencies]
+griller-core = { workspace = true }
+griller-runtime = { workspace = true }
+griller-adjudicate = { workspace = true }
+griller-policy = { workspace = true }
+griller-context = { workspace = true }
+griller-self-grill = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

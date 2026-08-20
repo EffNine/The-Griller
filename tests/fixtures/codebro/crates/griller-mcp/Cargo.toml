@@ -1,0 +1,10 @@
+[package]
+name = "griller-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP tool registration boundary for CodeBro."
+
+[dependencies]
+griller-core = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }

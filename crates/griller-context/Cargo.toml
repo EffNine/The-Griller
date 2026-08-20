@@ -1,0 +1,14 @@
+[package]
+name = "griller-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M4 context adjudication: deterministic project/task identity, evidence, and context matching for The Griller."
+
+[dependencies]
+griller-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+griller-policy = { workspace = true }
