@@ -557,6 +557,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "griller-gate"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "griller-mcp",
+ "griller-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "griller-mcp"
 version = "0.1.0"
 dependencies = [
