@@ -38,7 +38,6 @@ numbers describe that run, not a permanent promise.
 | `injection_rust/` | prompt-injection content; must be inert and never leak |
 | `generic_app/`, `meridian/` | additional context-detection fixtures |
 | `prompt_injection.txt` | injection text treated strictly as data |
-| `env_secret/.env` | secret-shaped content for leak tests |
 | `shell_meta/` | filename with spaces and shell metacharacters |
 | `fake_secrets.txt` | fake credentials for redaction tests |
 
