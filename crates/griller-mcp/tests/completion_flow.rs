@@ -14,7 +14,7 @@ use griller_mcp::{
     run_completion_check, CompletionReport, CompletionRequest, MAX_EVIDENCE_SNIPPETS,
 };
 
-use common::{fixture_git_repo, fixtures_dir};
+use common::fixture_git_repo;
 
 fn request(repo: &str, claim: &str) -> CompletionRequest {
     CompletionRequest {
@@ -64,7 +64,8 @@ fn wrong_project_is_blocked_before_any_attack() {
 
 #[test]
 fn correct_project_is_not_rejected_for_unfamiliarity() {
-    let repo = fixtures_dir().join("atlas");
+    let repo = fixture_git_repo("atlas");
+    let repo = repo.path().to_path_buf();
     let report = run_completion_check(&CompletionRequest {
         repo,
         claim: "Implement Atlas P10.5.1 Fact Store.".into(),

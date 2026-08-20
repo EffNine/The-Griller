@@ -10,13 +10,30 @@ fn griller() -> Command {
     Command::new(env!("CARGO_BIN_EXE_griller"))
 }
 
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Copy a static fixture into a temp dir as a standalone git repository
+/// named after the fixture, so context detection operates on the fixture
+/// alone rather than on an enclosing repository.
+fn fixture(name: &str) -> tempfile::TempDir {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("tests")
         .join("fixtures")
-        .join(name)
+        .join(name);
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let repo = temp.path().join(name);
+    std::fs::create_dir_all(&repo).expect("create repo dir");
+    copy_dir_recursive(&source, &repo);
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "griller-test@example.com"]);
+    git(&repo, &["config", "user.name", "Griller Test"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-m", "fixture"]);
+    temp
+}
+
+fn fixture_dir(temp: &tempfile::TempDir, name: &str) -> PathBuf {
+    temp.path().join(name)
 }
 
 fn run(args: &[&str]) -> (serde_json::Value, Option<i32>) {
@@ -52,7 +69,8 @@ fn check(task: &str, repo: &Path) -> (serde_json::Value, Option<i32>) {
 #[test]
 fn wrong_project_task_outputs_machine_readable_block() {
     let repo = fixture("codebro");
-    let (value, code) = check("Implement Atlas P10.5.1 Fact Store.", &repo);
+    let repo_dir = fixture_dir(&repo, "codebro");
+    let (value, code) = check("Implement Atlas P10.5.1 Fact Store.", &repo_dir);
     assert_eq!(code, Some(2), "wrong-project task must BLOCK");
     // Required machine-readable fields are all present.
     assert_eq!(value["context_status"], "mismatch");
@@ -78,7 +96,8 @@ fn wrong_project_task_outputs_machine_readable_block() {
 #[test]
 fn correct_project_task_passes() {
     let repo = fixture("codebro");
-    let (value, code) = check("Fix CodeBro MCP tool registration.", &repo);
+    let repo_dir = fixture_dir(&repo, "codebro");
+    let (value, code) = check("Fix CodeBro MCP tool registration.", &repo_dir);
     assert_eq!(code, Some(0));
     assert_eq!(value["context_status"], "matched");
     assert_eq!(value["operational_decision"], "pass");
@@ -89,7 +108,8 @@ fn correct_project_task_passes() {
 #[test]
 fn positive_fixture_is_not_blocked() {
     let repo = fixture("atlas");
-    let (value, code) = check("Implement P10.5.1 Fact Store.", &repo);
+    let repo_dir = fixture_dir(&repo, "atlas");
+    let (value, code) = check("Implement P10.5.1 Fact Store.", &repo_dir);
     assert_eq!(code, Some(0));
     assert_eq!(value["context_status"], "likely_match");
     assert_eq!(value["operational_decision"], "pass");
@@ -98,7 +118,8 @@ fn positive_fixture_is_not_blocked() {
 #[test]
 fn generic_task_is_not_blocked() {
     let repo = fixture("codebro");
-    let (value, code) = check("Fix the bug in the login flow.", &repo);
+    let repo_dir = fixture_dir(&repo, "codebro");
+    let (value, code) = check("Fix the bug in the login flow.", &repo_dir);
     assert_ne!(code, Some(2), "generic task must never BLOCK");
     assert_ne!(value["context_status"], "mismatch");
     assert_eq!(value["required_action"], "none");
@@ -107,7 +128,8 @@ fn generic_task_is_not_blocked() {
 #[test]
 fn conflicting_identity_is_ambiguous_warn() {
     let repo = fixture("meridian");
-    let (value, code) = check("Implement Atlas P10.5.1 Fact Store.", &repo);
+    let repo_dir = fixture_dir(&repo, "meridian");
+    let (value, code) = check("Implement Atlas P10.5.1 Fact Store.", &repo_dir);
     assert_eq!(code, Some(1));
     assert_eq!(value["context_status"], "ambiguous");
     assert_eq!(value["operational_decision"], "warn");
@@ -117,7 +139,8 @@ fn conflicting_identity_is_ambiguous_warn() {
 #[test]
 fn diva_text_goes_to_stderr_and_json_stays_on_stdout() {
     let repo = fixture("codebro");
-    let repo_arg = repo.to_str().unwrap();
+    let repo_dir = fixture_dir(&repo, "codebro");
+    let repo_arg = repo_dir.to_str().unwrap();
     let output = griller()
         .args([
             "context",
@@ -146,7 +169,8 @@ fn diva_text_goes_to_stderr_and_json_stays_on_stdout() {
 #[test]
 fn pretty_output_is_valid_json() {
     let repo = fixture("codebro");
-    let repo_arg = repo.to_str().unwrap();
+    let repo_dir = fixture_dir(&repo, "codebro");
+    let repo_arg = repo_dir.to_str().unwrap();
     let output = griller()
         .args([
             "context",
@@ -197,7 +221,8 @@ fn git_remote_identity_matches_via_cli() {
 #[test]
 fn cli_context_describe_still_works() {
     let repo = fixture("atlas");
-    let repo_arg = repo.to_str().unwrap();
+    let repo_dir = fixture_dir(&repo, "atlas");
+    let repo_arg = repo_dir.to_str().unwrap();
     let value = run_ok(&["context", "--repo", repo_arg]);
     assert_eq!(value["project_name"], "atlas");
 }
@@ -215,4 +240,17 @@ fn git(dir: &std::path::Path, args: &[&str]) {
         dir,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn copy_dir_recursive(source: &Path, dest: &std::path::Path) {
+    for entry in std::fs::read_dir(source).expect("read fixture dir") {
+        let entry = entry.expect("read dir entry");
+        let target = dest.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            std::fs::create_dir_all(&target).expect("create dir");
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
 }

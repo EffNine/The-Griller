@@ -3,7 +3,7 @@
 //! The binary is invoked via `CARGO_BIN_EXE_griller`. All assertions are on
 //! structured JSON output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn griller() -> Command {
@@ -34,13 +34,56 @@ fn run_json_with_exit(args: &[&str]) -> (serde_json::Value, Option<i32>) {
     (value, output.status.code())
 }
 
-fn fixture_basic_rust() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Copy the self-contained basic_rust fixture into a temp dir and initialize
+/// it as a git repository with one commit. Auto-collect then creates an
+/// isolated worktree of the fixture alone (not of an enclosing repository),
+/// and the fixture's prebuilt target/ keeps the replay build warm.
+fn fixture_basic_rust() -> tempfile::TempDir {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("tests")
         .join("fixtures")
-        .join("basic_rust")
+        .join("basic_rust");
+    let temp = tempfile::tempdir().expect("create temp dir");
+    copy_dir_recursive(&source, temp.path());
+    git(temp.path(), &["init", "-b", "main"]);
+    git(
+        temp.path(),
+        &["config", "user.email", "griller-test@example.com"],
+    );
+    git(temp.path(), &["config", "user.name", "Griller Test"]);
+    git(temp.path(), &["add", "-A"]);
+    git(temp.path(), &["commit", "-m", "fixture"]);
+    temp
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {:?}: {}",
+        dir,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn copy_dir_recursive(source: &Path, dest: &std::path::Path) {
+    for entry in std::fs::read_dir(source).expect("read fixture dir") {
+        let entry = entry.expect("read dir entry");
+        let target = dest.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            std::fs::create_dir_all(&target).expect("create dir");
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
 }
 
 #[test]
@@ -122,7 +165,7 @@ fn claim_assess_auto_collect_runs_cargo_test() {
     // basic_rust fixture. The fixture has no tests, so cargo test exits 0 and
     // the "tests pass" claim is VERIFIED by direct environment evidence.
     let repo = fixture_basic_rust();
-    let repo_arg = repo.to_str().unwrap();
+    let repo_arg = repo.path().to_str().unwrap();
     let value = run_json(&[
         "claim",
         "assess",
@@ -182,7 +225,7 @@ fn decide_exit_codes() {
     // PASS: real verification evidence via auto-collect on the basic_rust
     // fixture (cargo test passes).
     let repo = fixture_basic_rust();
-    let repo_arg = repo.to_str().unwrap();
+    let repo_arg = repo.path().to_str().unwrap();
     let pass = griller()
         .args([
             "claim",

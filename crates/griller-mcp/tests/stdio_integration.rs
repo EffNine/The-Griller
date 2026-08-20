@@ -23,7 +23,7 @@ use rust_mcp_sdk::{
     McpClient, StdioTransport, ToMcpClientHandler, TransportOptions,
 };
 
-use common::fixtures_dir;
+use common::fixture_git_repo;
 
 struct TestClientHandler;
 
@@ -60,10 +60,6 @@ fn call(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
 
 fn tool_text(result: &rust_mcp_sdk::schema::CallToolResult) -> String {
     result.content[0].as_text_content().unwrap().text.clone()
-}
-
-fn codebro_fixture() -> String {
-    fixtures_dir().join("codebro").display().to_string()
 }
 
 #[tokio::test]
@@ -131,7 +127,8 @@ async fn stdio_end_to_end() {
     assert_eq!(health_json["security"]["os_sandbox"], "not_enforced");
 
     // 5. Call check_context with the wrong-project scenario.
-    let repo = codebro_fixture();
+    let repo = fixture_git_repo("codebro");
+    let repo = repo.path().to_path_buf();
     let ctx = client
         .request_tool_call(call(
             "griller.check_context",

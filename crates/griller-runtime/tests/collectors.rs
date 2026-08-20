@@ -154,11 +154,18 @@ fn git_diff_collector_errors_on_non_git_dir() {
 
 #[test]
 fn file_content_collector_reads_targeted_file() {
-    let source_dir = common::fixtures_dir();
+    // Copy the injection fixture to a standalone temp dir so it is not
+    // interpreted as part of an enclosing repository.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        common::fixtures_dir().join("prompt_injection.txt"),
+        dir.path().join("prompt_injection.txt"),
+    )
+    .unwrap();
     let evidence = FileContentCollector {
         relative_path: PathBuf::from("prompt_injection.txt"),
     }
-    .collect(&source_dir)
+    .collect(dir.path())
     .unwrap();
     let content = match &evidence[0].content {
         griller_core::evidence::EvidenceContent::FileContent(f) => f,

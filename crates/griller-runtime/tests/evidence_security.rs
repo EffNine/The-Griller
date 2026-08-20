@@ -29,11 +29,18 @@ fn agent_claim_with_injection_is_stored_verbatim_as_data() {
 
 #[test]
 fn file_content_with_injection_is_data_not_instructions() {
-    let source = common::fixtures_dir();
+    // Copy the injection fixture to a standalone temp dir so it is not
+    // interpreted as part of an enclosing repository.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        common::fixtures_dir().join("prompt_injection.txt"),
+        dir.path().join("prompt_injection.txt"),
+    )
+    .unwrap();
     let evidence = FileContentCollector {
         relative_path: PathBuf::from("prompt_injection.txt"),
     }
-    .collect(&source)
+    .collect(dir.path())
     .unwrap();
     let content = match &evidence[0].content {
         EvidenceContent::FileContent(f) => f,
