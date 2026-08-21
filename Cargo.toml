@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["The Griller Project"]
@@ -16,6 +16,7 @@ griller-adjudicate = { path = "crates/griller-adjudicate" }
 griller-policy = { path = "crates/griller-policy" }
 griller-context = { path = "crates/griller-context" }
 griller-self-grill = { path = "crates/griller-self-grill" }
+griller-gate = { path = "crates/griller-gate" }
 
 serde = "1.0"
 serde_json = "1.0"

@@ -270,17 +270,149 @@ impl AttackExecutor {
 
     fn parse_presence_claim(claim: &str, repo: &Path) -> Result<(bool, PathBuf), RuntimeError> {
         if let Some(rest) = claim.strip_prefix("Removed ") {
-            return Ok((true, repo.join(rest.trim())));
+            let fragment = rest.trim();
+            // Reject empty fragments.
+            if fragment.is_empty() {
+                return Err(RuntimeError::Execution(
+                    "empty: claim has no path after Removed".into(),
+                ));
+            }
+            // Reject absolute paths in the fragment.
+            if fragment.starts_with('/') {
+                return Err(RuntimeError::Execution(
+                    "repository-relative: claim contains absolute path".into(),
+                ));
+            }
+            // Reject traversal in the fragment.
+            if fragment.contains("..") {
+                return Err(RuntimeError::Execution(
+                    "traverse: claim resolves outside the repository root".into(),
+                ));
+            }
+            let path = repo.join(fragment);
+            // Reject symlink escapes - check all path components.
+            let mut current = path.clone();
+            let mut escaped = false;
+            while let Some(parent) = current.parent() {
+                if let Ok(metadata) = std::fs::symlink_metadata(&current) {
+                    if metadata.file_type().is_symlink() {
+                        if let Ok(target) = std::fs::read_link(&current) {
+                            let resolved = if target.is_absolute() {
+                                target
+                            } else {
+                                current.parent().unwrap_or(current.as_path()).join(&target)
+                            };
+                            if let Ok(canonical_repo) = repo.canonicalize() {
+                                if let Ok(canonical_resolved) = resolved.canonicalize() {
+                                    if !canonical_resolved.starts_with(&canonical_repo) {
+                                        escaped = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                current = parent.to_path_buf();
+            }
+            if escaped {
+                return Err(RuntimeError::Execution(
+                    "escapes: claim resolves outside the repository root via symlink".into(),
+                ));
+            }
+            // Double-check canonicalized path stays inside repo.
+            if path.strip_prefix(repo).is_err() {
+                if let Ok(canonical_repo) = repo.canonicalize() {
+                    if let Ok(canonical_path) = path.canonicalize() {
+                        if !canonical_path.starts_with(&canonical_repo) {
+                            return Err(RuntimeError::Execution(
+                                "traverse: claim resolves outside the repository root".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            return Ok((true, path));
         }
         if let Some(rest) = claim.strip_prefix("Added ") {
-            return Ok((false, repo.join(rest.trim())));
+            let fragment = rest.trim();
+            // Reject empty fragments.
+            if fragment.is_empty() {
+                return Err(RuntimeError::Execution(
+                    "empty: claim has no path after Added".into(),
+                ));
+            }
+            // Reject absolute paths in the fragment.
+            if fragment.starts_with('/') {
+                return Err(RuntimeError::Execution(
+                    "repository-relative: claim contains absolute path".into(),
+                ));
+            }
+            // Reject traversal in the fragment.
+            if fragment.contains("..") {
+                return Err(RuntimeError::Execution(
+                    "traverse: claim resolves outside the repository root".into(),
+                ));
+            }
+            let path = repo.join(fragment);
+            // Reject symlink escapes - check all path components.
+            let mut current = path.clone();
+            let mut escaped = false;
+            while let Some(parent) = current.parent() {
+                if let Ok(metadata) = std::fs::symlink_metadata(&current) {
+                    if metadata.file_type().is_symlink() {
+                        if let Ok(target) = std::fs::read_link(&current) {
+                            let resolved = if target.is_absolute() {
+                                target
+                            } else {
+                                current.parent().unwrap_or(current.as_path()).join(&target)
+                            };
+                            if let Ok(canonical_repo) = repo.canonicalize() {
+                                if let Ok(canonical_resolved) = resolved.canonicalize() {
+                                    if !canonical_resolved.starts_with(&canonical_repo) {
+                                        escaped = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                current = parent.to_path_buf();
+            }
+            if escaped {
+                return Err(RuntimeError::Execution(
+                    "escapes: claim resolves outside the repository root via symlink".into(),
+                ));
+            }
+            // Double-check canonicalized path stays inside repo.
+            if path.strip_prefix(repo).is_err() {
+                if let Ok(canonical_repo) = repo.canonicalize() {
+                    if let Ok(canonical_path) = path.canonicalize() {
+                        if !canonical_path.starts_with(&canonical_repo) {
+                            return Err(RuntimeError::Execution(
+                                "traverse: claim resolves outside the repository root".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            return Ok((false, path));
         }
         for word in claim.split_whitespace() {
-            if word.ends_with(".rs")
-                || word.ends_with(".py")
-                || word.ends_with(".js")
-                || word.contains('/')
-            {
+            // Reject absolute paths in the fallback word path.
+            if word.starts_with('/') {
+                return Err(RuntimeError::Execution(
+                    "repository-relative: claim contains absolute path".into(),
+                ));
+            }
+            // Reject traversal in the fallback word path.
+            if word.contains("..") {
+                return Err(RuntimeError::Execution(
+                    "traverse: claim contains path traversal".into(),
+                ));
+            }
+            if word.ends_with(".rs") || word.ends_with(".py") || word.ends_with(".js") {
                 return Ok((false, repo.join(word.trim_matches(['/', '\\']))));
             }
         }

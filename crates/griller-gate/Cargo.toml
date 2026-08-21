@@ -1,0 +1,26 @@
+[package]
+name = "griller-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automatic completion gate: invokes the existing griller-mcp check_completion pipeline at a host completion boundary."
+
+[[bin]]
+name = "griller-gate"
+path = "src/main.rs"
+
+[[bin]]
+name = "griller-gate-fake-mcp"
+path = "src/bin/fake_mcp.rs"
+test = false
+
+[dependencies]
+griller-runtime = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+griller-mcp = { path = "../griller-mcp" }
+tempfile = { workspace = true }

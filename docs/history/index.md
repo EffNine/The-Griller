@@ -18,14 +18,13 @@ table; use these reports for the journey.
 | M5 | Red team: safe adversarial attacks, replay, allow-list validation | [m5-red-team.md](m5-red-team.md) (includes the M5.1 hardening of attack validation) |
 | M6 | MCP server: stdio adapter exposing the Griller tools | covered by [m8-integration.md](m8-integration.md); canonical: [docs/mcp.md](../mcp.md) |
 | M7 | Self-grill: the 16-check decision audit | [m7-self-grill.md](m7-self-grill.md) |
-| M8 | Final integration: `griller.check_completion`, the six-tool surface, real MCP + OpenCode field validation | [m8-integration.md](m8-integration.md) |
+| M8 | Final integration: `griller.check_completion`, the six-tool surface, real MCP + OpenCode field validation, and the automatic completion gate (`griller-gate`) | [m8-integration.md](m8-integration.md) |
 
 ## Status
 
 M0–M8 are complete and were validated in the field (real MCP stdio, real
 OpenCode discovery and workflow, 424 tests passing at the final
-field-validation run). No M9 exists; nothing beyond the integration was
-added to reach M8.
+No M9 exists; the gate ("griller-gate") is part of M8 field validation as the OpenCode integration boundary, not a new milestone.
 
 ## Reading guide
 

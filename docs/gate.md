@@ -1,0 +1,133 @@
+# The Griller automatic completion gate
+
+The gate is the integration boundary between OpenCode (or any host agent) and the Griller's verification pipeline. It runs one-shot per completion event — there is no daemon, no polling, and the gate never emits a completion event (fail-closed).
+
+## One-shot per boundary
+
+When the host detects a completion boundary (the agent reached a done/finish state), it constructs a [`CompletionEvent`] and invokes `griller-gate check --config <path>` via the OpenCode plugin's `session.idle` hook. The gate connects to the `griller-mcp` server, performs a stale-server identity check, and invokes `griller.check_completion {repo, claim, timeout}`. The verdict of that pipeline becomes the gate's decision. The gate **never** re-implements verification.
+
+## CLI usage
+
+```sh
+griller-gate check --config /path/to/gate.json
+```
+
+Stdin: a JSON [`CompletionEvent`]. Stdout: a [`GateDecision`] JSON. Exit codes: `0` (decision produced, including `Unavailable`), `2` (configuration error), `3` (gate could not produce a decision).
+
+The gate binary reads a JSON config file (`GateConfig`) that specifies:
+
+- **`mcp_binary`**: absolute path to the `griller-mcp` binary to spawn
+- **`expected_server`**: server identity (`service`, `protocol`, `schema_version`, `version`, `tools`) for stale-server protection
+- **`state_dir`**: directory for lifecycle logs and decision records
+- **`timeout_ms`**: per-request timeout applied to MCP round-trips (default 120s)
+- **`fail_closed`**: when true, integration failures produce `Unavailable` instead of silently accepting
+- **`warn_not_pass`**: when true, a `WARN` verdict from Griller is not treated as PASS by the gate
+
+## Decision schema
+
+The gate produces a [`GateDecision`] with these fields (schema version `g1.0`):
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `"g1.0"` (gate's own schema; distinct from MCP `m8.0`) |
+| `status` | `Accepted` / `Warned` / `Blocked` / `Unavailable` |
+| `verdict` | `None` / `Some(Griller verdict)` |
+| `reason_code` | `None` / `Some(String)` (e.g. `EVIDENCE_MATCHED`, `STALE_SERVER`, `UNVERIFIABLE`) |
+| `findings` | array of `{ key, detail }` from Griller |
+| `required_action` | `None` / `Some(String)` (e.g. `confirm_project`) |
+| `required_action_message` | `None` / `Some(String)` (human-readable next step) |
+| `event` | echoed [`EventSummary`] from the event |
+| `integration` | `IntegrationInfo` describing the gate's own integration status |
+| `griller_report` | optional full `Report` from the `check_completion` call |
+| `timing` | `GateTiming { connect_ms, check_ms, total_ms }` |
+| `lifecycle` | `LifecycleLog` stages traversed |
+
+## Stale-server protection
+
+Before invoking any tool, the gate checks the MCP server's identity against canonical constants (`service: "the-griller"`, `protocol: "2025-11-25"`, `schema_version: "m8.0"`, tools: six names). A mismatch yields `STALE_SERVER` → `Unavailable` fail-closed. The authoritative identity check is `griller.health`.
+
+## Fail-closed defaults
+
+- **Unavailable**: gate could not run (uninitialized config, MCP server unavailable, stale server, timeout). Never silently PASS. Default when no config can be loaded or the MCP binary cannot be started.
+- **Warned**: Griller returned WARN verdict. The gate maps to `GateStatus::Warned`; the completion is **not** accepted as verified unless `warn_not_pass` is false in config. The gate injects a `noReply` user message so the agent learns the completion was not accepted.
+- **Blocked**: Griller returned BLOCK verdict. Completion is explicitly rejected.
+- **Accepted**: Griller returned PASS verdict. Completion is accepted.
+
+The fail-closed default is deliberate: when in doubt, the gate refuses to verify (Unavailable). This prevents a stale or misconfigured MCP server from silently converting an unverified completion into PASS.
+
+## Integration with OpenCode
+
+### Plugin: `.opencode/plugins/griller-gate.ts`
+
+The OpenCode adapter (`opencode/plugins/griller-gate.ts`) listens for `session.idle` events. When the agent produced a new assistant completion since the last gate check, it builds a `CompletionEvent` from the message text and runs `griller-gate check --config <path>`. Non-accepted verdicts are injected back into the session as a `noReply` user message so the agent learns its completion was not accepted as verified.
+
+Key design decisions:
+
+- **Per-session dedupe**: each assistant message is verified at most once per session. A `Map<string, string>` tracks the last checked assistant message ID; on idle the plugin skips messages already checked.
+- **In-flight guard**: a per-session boolean prevents concurrent gate runs for the same session.
+- **Loop prevention**: the injected message is a user message (never a new assistant completion), so the next `session.idle` event sees the same last assistant ID and the dedupe skips it. The gate also never emits a completion event — it only produces a decision JSON on stdout, which the plugin reads and may inject a prompt.
+- **Claim truncation**: assistant message text is capped at 8000 chars to bound the gate input.
+- **Fail-closed surface**: if `griller-gate` is missing, misconfigured, or exits non-zero, the plugin injects a one-time notice that verification is unavailable (fail-closed).
+
+### Config in OpenCode
+
+The plugin discovers config from `GRILLER_GATE_CONFIG` env or `$HOME/.config/griller/gate.json`. The config must have `mcp_binary` set to the `griller-mcp` binary path. If absent, the plugin injects a once-per-session notice that the gate is unavailable.
+
+### Lifecycle lines on stderr
+
+The gate emits these lines to the host's stderr during a run:
+
+```
+griller-gate: COMPLETION_EVENT repo=<repo> session=<session>
+griller-gate: <verdict> (<total>ms)
+griller-gate: lifecycle: <stage1> -> <stage2> -> ...
+```
+
+These are cosmetic; the plugin does not need to parse them (it reads stdout JSON).
+
+## Mismatch vs. other block reasons
+
+| Condition | Gate action |
+|---|---|
+| Repo name mismatch (event's `repository` ≠ assistant's `path.root`) | `MISMATCH_CONTEXT_BLOCK` → gate maps to `Blocked`, injects `noReply` with `confirm_project` |
+| MCP server identity stale (`service/protocol/schema_version/tools` differ from canonical) | `STALE_SERVER` → `Unavailable`, fail-closed |
+| MCP server health check fails | `HealthCheckFailed` → `Unavailable` |
+| `griller.check_completion` verdict PASS | `Accepted`, no injection |
+| `griller.check_completion` verdict WARN | `Warned`, inject `noReply` |
+| `griller.check_completion` verdict BLOCK | `Blocked`, inject `noReply` |
+| Gate binary missing / config missing / spawn failure | `Unavailable`, inject one-time notice that verification is unavailable |
+| Config `fail_closed=false` with unavailable server | Still `Unavailable` (gate-enforced, not configurable away) |
+| Config `warn_not_pass=false` with WARN verdict | Completion IS accepted as verified; no injection |
+
+## Troubleshooting
+
+### Gate binary not found
+
+- Ensure `GRILLER_GATE_BIN` env points to an executable `griller-gate`, OR
+- Install `griller-gate` to `$HOME/.local/bin/`, OR
+- Build: `cargo build --release -p griller-gate` and place the binary on `PATH`.
+
+### Config missing / invalid
+
+- Ensure `GRILLER_GATE_CONFIG` points to a valid JSON config, OR
+- Place config at `$HOME/.config/griller/gate.json` with `mcp_binary` set.
+
+### No tools appear in OpenCode after plugin reload
+
+- Restart OpenCode (or reload config via the command palette). The plugin is auto-discovered from `.opencode/plugins/griller-gate.ts`; verify the file is present and `node --version` ≥ 20.
+
+### Agent says completion was accepted but gate says Warned/Blocked
+
+- The gate's `warn_not_pass` defaults to true. Set `warn_not_pass: false` in config to accept WARN as PASS. Or investigate why Griller returned WARN (e.g. incomplete evidence).
+
+### Agent never sees the injection message
+
+- Ensure `noReply: true` is set (it is, in the plugin). The injected message appears in the conversation as a user message; the agent may ignore it if not attending to all messages. The gate also logs the injection via `client.app.log` at `warn` level.
+
+### Integration with the six MCP tools
+
+The gate uses the same `griller-mcp` server as the six tools (`griller.verify_claim`, `griller.check_completion`, `griller.check_context`, `griller.run_attacks`, `griller.self_grill`, `griller.health`). The gate does NOT add or remove tools — it delegates to the existing pipeline.
+
+## Version
+
+The gate workspace version is `0.2.0`. The MCP schema stays `m8.0`; the gate decision schema is `g1.0`.

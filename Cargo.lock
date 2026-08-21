@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "griller-adjudicate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "griller-core",
  "serde",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "griller-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "griller-adjudicate",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "griller-context"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "griller-core",
  "griller-policy",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "griller-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "regex",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "griller-gate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "griller-mcp",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "griller-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "griller-adjudicate",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "griller-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "griller-adjudicate",
  "griller-context",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "griller-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "griller-context",
  "griller-core",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "griller-self-grill"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "griller-adjudicate",

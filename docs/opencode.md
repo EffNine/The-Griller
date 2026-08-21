@@ -197,3 +197,79 @@ the health report is the source of truth.
   outside unit tests matters.
 - The binary path in the config example is *your* path. The docs deliberately
   do not hardcode a project-specific filesystem layout.
+
+## 7. Automatic completion gate
+
+The automatic completion gate (`griller-gate`) is an OpenCode plugin that
+listens for `session.idle` and, when the agent produced a new assistant
+completion since the last gate check, runs `griller-gate check` against the
+existing griller-mcp pipeline. Non-accepted verdicts (Warned, Blocked,
+Unavailable) are injected back into the session as a `noReply` user message
+so the agent learns its completion was not accepted as verified.
+
+See [`docs/gate.md`](gate.md) for full details on the gate's decision
+schema, stale-server protection, fail-closed defaults, and integration
+with OpenCode.
+
+- Project-level plugin: `.opencode/plugins/griller-gate.ts`
+- Config: `GRILLER_GATE_CONFIG` env or `$HOME/.config/griller/gate.json`
+  (must have `mcp_binary` set)
+- Plugin discovers from `.opencode/plugins/` at startup; no npm
+  dependency beyond `@opencode-ai/plugin`.
+
+- Loop prevention: per-session dedupe (last checked assistant message ID),
+  in-flight guard, injected user message never triggers a new assistant
+  completion, and the gate itself never emits a completion event.
+
+- Fail-closed defaults: if `griller-gate` is missing, misconfigured, or
+  exits non-zero, the plugin injects a one-time notice that verification
+  is unavailable.
+
+### Interaction with the six MCP tools
+
+The gate uses the same `griller-mcp` server as the six tools
+(`griller.verify_claim`, `griller.check_completion`, `griller.check_context`,
+`griller.run_attacks`, `griller.self_grill`, `griller.health`). The gate
+does NOT add or remove tools — it delegates to the existing pipeline.
+
+## Troubleshooting
+
+### MCP not discovered
+
+- Confirm the config file was saved and OpenCode restarted.
+- Confirm the `mcp` key exists and the entry is inside it, not outside.
+- Confirm `enabled: true` is set.
+- Try a minimal config with only the griller entry to isolate a syntax error
+  elsewhere in the file.
+
+### Server exits immediately
+
+The server is a long-running stdio process — if it exits, OpenCode reports
+the server failed to start. Common causes:
+
+- The binary path is wrong. Verify: `ls -la <your-path>/griller-mcp` and run
+  `<your-path>/griller-mcp` with nothing on stdin — it should sit and wait,
+  not exit.
+- The binary was not built: `cargo build --release -p griller-mcp` first.
+
+### Tool unavailable
+
+- Call `griller.health` first; if it works, the server is alive.
+- The tool surface is exactly six names — if a tool name was mistyped
+  (`griller.checkCompletion` instead of `griller.check_completion`), the
+  call is rejected. Use the names from `griller.health`.
+
+### Gate plugin not injected after completion
+
+- Ensure `GRILLER_GATE_CONFIG` is set to a valid config, or place config at
+  `$HOME/.config/griller/gate.json` with `mcp_binary` set.
+- Ensure the plugin file `.opencode/plugins/griller-gate.ts` exists and
+  OpenCode was restarted (plugins are loaded at startup).
+- Check stderr for gate exit codes and stdout for decision JSON.
+
+### Agent never sees the injection message
+
+- Ensure `noReply: true` is set (it is, in the plugin). The injected message
+  appears in the conversation as a user message.
+- Check stderr for gate output and `client.app.log` for structured log
+  entries at `info`/`warn`/`error` level.

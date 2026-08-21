@@ -14,7 +14,8 @@ crates/
 ├── griller-context/       # M4: project/task identity, context status (pure)
 ├── griller-self-grill/    # M7: 16-check decision audit (pure)
 ├── griller-cli/           # the `griller` binary (adapter)
-└── griller-mcp/           # MCP stdio server, six tools (adapter)
+├── griller-mcp/           # MCP stdio server, six tools (adapter)
+├── griller-gate/          # automatic completion gate (one-shot, OpenCode plugin)
 tests/
 └── fixtures/              # static golden + adversarial fixtures
 ```
@@ -31,6 +32,7 @@ tests/
 | `griller-self-grill` | SelfGrillInput/Result, the 16 checks, the single-pass runner | never |
 | `griller-cli` | clap surface → Griller APIs → canonical JSON on stdout | adapter (delegates to runtime) |
 | `griller-mcp` | six MCP tools + the `check_completion` orchestration | adapter (delegates to runtime) |
+| `griller-gate` | automatic completion gate (one-shot CLI + OpenCode plugin) | CLI reads stdin JSON, outputs stdout JSON; plugin injects verdicts |
 
 ## Architectural rules
 
