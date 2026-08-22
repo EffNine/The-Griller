@@ -16,11 +16,178 @@ import os from "node:os"
 import path from "node:path"
 
 const GATE_SCHEMA_VERSION = "g1.0"
-const MAX_CLAIM_CHARS = 8000
+const MAX_CLAIM_CHARS = 200
 const MAX_MESSAGES = 100
 const MAX_CHILD_STDOUT = 1_000_000
 const MAX_CHILD_STDERR = 200_000
 const CHILD_CAP_MS = 10 * 60_000
+
+// Maximum length for the extracted completion claim.
+// Shorter than MAX_CLAIM_CHARS (original transcript cap) to keep Griller
+// claims concise and deterministic.
+const EXTRACTION_MAX_CHARS = 300
+
+// Explicit completion claim marker recognized by the extraction layer.
+// The agent can annotate its completion with this convention:
+//   ### Completion Claim
+//   <one-sentence assertion>
+const COMPLETION_CLAIM_MARKER = "### Completion Claim"
+
+/**
+ * Deterministic completion-claim extraction from an assistant message.
+ *
+ * Returns the extracted claim, or null when the message contains no
+ * recognizable completion assertion. The original message is preserved
+ * separately (returned as second element) for diagnostics.
+ *
+ * Extraction order:
+ * 1. Explicit `### Completion Claim` marker
+ * 2. Final concise completion assertion (deterministic heuristics)
+ * 3. null when ambiguous or impossible
+ */
+function extract_completion_claim(
+  text: string,
+): { claim: string | null; original: string } {
+  // Always preserve the original for diagnostics (truncated at a safe bound).
+  const original =
+    text.length > MAX_CHILD_STDOUT ? `${text.slice(0, MAX_CHILD_STDOUT)}…` : text
+
+  // --- Path 1: explicit marker ------------------------------------------
+  const markerIndex = text.indexOf(COMPLETION_CLAIM_MARKER)
+  if (markerIndex !== -1) {
+    const afterMarker = text.slice(markerIndex + COMPLETION_CLAIM_MARKER.length)
+    // Extract the next non-empty line(s) as the claim.
+    const lines = afterMarker
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+    if (lines.length > 0) {
+      let claim = lines[0]
+      // Allow a second line if the first is very short (< 10 chars).
+      if (lines.length > 1 && claim.length < 10) {
+        claim = `${claim} ${lines[1]}`
+      }
+      claim = claim.replace(/\*\*/g, "").replace(/\*/g, "").trim()
+      if (claim.length > 0 && claim.length <= EXTRACTION_MAX_CHARS) {
+        return { claim, original }
+      }
+    }
+  }
+
+  // --- Path 2: heuristic extraction from the tail -----------------------
+  // Strip markdown tables (lines starting with |) and code fences.
+  const stripped = strip_markdown_artifacts(text)
+
+  // Take the last 3 paragraphs/sentences and look for a completion signal.
+  const segments = stripped
+    .split(/\n\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  const tail = segments.slice(-3)
+
+  for (const segment of tail.reverse()) {
+    // A completion assertion is typically 1-3 sentences at the end.
+    const sentences = segment
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    for (let i = sentences.length - 1; i >= 0; i--) {
+      const candidate = sentences[i]
+      // Must be a reasonable length (not a single word, not a huge block).
+      if (candidate.length < 5 || candidate.length > EXTRACTION_MAX_CHARS) continue
+      // Must contain at least one completion-indicating keyword.
+      const lower = candidate.toLowerCase()
+      if (
+        /\b(pass|complete|done|finish|implement|test|verify|build|run|check|success)\b/.test(
+          lower,
+        )
+      ) {
+        // Reject obvious injection patterns.
+        if (/ignore.*griller|disregard.*gate|bypass.*check|report\s+(pass|approved)/i.test(candidate)) {
+          continue
+        }
+        // Strip inline markdown artifacts but preserve sentence structure.
+        const clean = candidate
+          .replace(/\*\*/g, "")
+          .replace(/\*/g, "")
+          .replace(/`([^`]+)`/g, "$1")
+          .trim()
+        if (clean.length > 0) return { claim: clean, original }
+      }
+    }
+  }
+
+  // --- Path 3: fallback — use first sentence if it looks like a claim -----
+  const firstSentences = stripped
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  for (const candidate of firstSentences) {
+    if (candidate.length < 5 || candidate.length > EXTRACTION_MAX_CHARS) continue
+    // A completion claim must not begin with markdown structural syntax
+    // (heading, fenced code, table separator). Reject and keep searching.
+    if (starts_with_markdown_structure(candidate)) continue
+    const lower = candidate.toLowerCase()
+    if (
+      /\b(implemented|added|fixed|completed|resolved|verified|all\s+tests\s+pass|everything\s+(is|was)|claim|ready)\b/.test(
+        lower,
+      )
+    ) {
+      const clean = candidate
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .replace(/`([^`]+)`/g, "$1")
+        .trim()
+      if (clean.length > 0) return { claim: clean, original }
+    }
+  }
+
+  // No recognizable completion claim found.
+  return { claim: null, original }
+}
+
+/**
+ * True when a completion-claim candidate begins with markdown structural
+ * syntax: a heading ("# ", "## ", ...), a fenced code marker ("```"), or a
+ * table separator row ("|---|---|"). A completion assertion must never begin
+ * with structural syntax, so such candidates are rejected and the fallback
+ * keeps searching for a real completion sentence.
+ */
+function starts_with_markdown_structure(candidate: string): boolean {
+  const trimmed = candidate.trimStart()
+  // Markdown heading: 1..6 hashes followed by a space or end of line.
+  if (/^#{1,6}(?:\s|$)/.test(trimmed)) return true
+  // Fenced code block marker.
+  if (/^```/.test(trimmed)) return true
+  // Markdown table separator row: "|---|---|", "| --- |", "|:---:|", ...
+  if (/^\|(?:[ \t]*:?-+:?[ \t]*\|)+/.test(trimmed)) return true
+  return false
+}
+
+/**
+ * Strip markdown tables and fenced code blocks from a text blob.
+ * Returns the cleaned text suitable for claim extraction heuristics.
+ */
+function strip_markdown_artifacts(text: string): string {
+  // Remove fenced code blocks (```...```).
+  let result = text.replace(/```[\s\S]*?```/g, "")
+  // Remove markdown table rows (lines starting with |).
+  result = result
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim()
+      // Keep separator lines (---|---|) and table rows only if they are
+      // very short (likely part of a sentence, not a table).
+      if (trimmed.startsWith("|")) {
+        // Count pipe characters — a real table row has many.
+        const pipeCount = (trimmed.match(/\|/g) || []).length
+        return pipeCount < 3
+      }
+      return true
+    })
+    .join("\n")
+  return result
+}
 
 function resolveGateBinary(): string {
   const env = process.env.GRILLER_GATE_BIN
@@ -144,16 +311,34 @@ export const GrillerGate: Plugin = async ({ client, directory }) => {
         .trim()
       if (!text) return
 
-      const claim = text.length > MAX_CLAIM_CHARS ? `${text.slice(0, MAX_CLAIM_CHARS)}\n…` : text
+      const { claim: extractedClaim, original: originalMessage } =
+        extract_completion_claim(text)
+      if (!extractedClaim) {
+        // Completion claim unavailable — fail closed.
+        await log("warn", "completion claim could not be extracted", {
+          sessionID,
+          messageLength: text.length,
+        })
+        // Still mark as checked so we don't retry the same message.
+        state.lastChecked = latest.info.id
+        await handleDecision(sessionID, state, latest.info.id, null)
+        return
+      }
+
       const repository = (latest.info as { path?: { root?: string } }).path?.root ?? directory
 
       const completionEvent = {
         schema_version: GATE_SCHEMA_VERSION,
         repository,
-        claim,
+        claim: extractedClaim,
         agent_id: "opencode",
         session_id: sessionID,
         timestamp_ms: Date.now(),
+        // Diagnostic only — not sent to Griller as evidence.
+        _diagnostic: {
+          original_message_length: text.length,
+          extracted_claim_length: extractedClaim.length,
+        },
       }
 
       state.inFlight = true

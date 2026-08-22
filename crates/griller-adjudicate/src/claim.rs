@@ -147,7 +147,39 @@ impl ClaimTarget {
     }
 }
 
-/// A structured claim about the codebase.
+/// A count specification for numeric assertions.
+///
+/// `Exact(n)` means the observed count must equal `n`.
+/// `AtLeast(n)` means the observed count must be >= `n`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountSpec {
+    /// The observed count must equal `n`.
+    Exact(u64),
+    /// The observed count must be at least `n`.
+    AtLeast(u64),
+}
+
+/// A structured numeric assertion extracted from a completion claim.
+///
+/// These assertions capture test/result counts from claims such as
+/// `"154 tests pass."` or `"at least 154 tests pass."`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumericAssertion {
+    /// The expected number of tests that passed.
+    pub expected_passed: CountSpec,
+    /// Optional expected number of failed tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_failed: Option<u64>,
+    /// Optional expected number of skipped tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_skipped: Option<u64>,
+    /// Optional scope qualifier (e.g. "Rust", "plugin extraction").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_qualifier: Option<String>,
+}
+
+/// Structured claim about the codebase.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     /// Content-addressed identifier (BLAKE3 over the content fields).
@@ -162,6 +194,9 @@ pub struct Claim {
     pub target: ClaimTarget,
     /// Structured predicates extracted from the text.
     pub predicates: Vec<Predicate>,
+    /// Numeric test-count assertions, when the claim expresses a count.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub numeric_assertions: Vec<NumericAssertion>,
     /// For requirement claims: how the requirement entered the system.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement_provenance: Option<RequirementProvenance>,
@@ -176,6 +211,7 @@ impl Claim {
         target: ClaimTarget,
         predicates: Vec<Predicate>,
         requirement_provenance: Option<RequirementProvenance>,
+        numeric_assertions: Vec<NumericAssertion>,
     ) -> Self {
         let text = text.into();
         let id = claim_content_hash(
@@ -185,6 +221,7 @@ impl Claim {
             &target,
             &predicates,
             &requirement_provenance,
+            &numeric_assertions,
         );
         Self {
             id: ClaimId::from_hash(&id),
@@ -193,6 +230,7 @@ impl Claim {
             text,
             target,
             predicates,
+            numeric_assertions,
             requirement_provenance,
         }
     }
@@ -207,6 +245,7 @@ impl Claim {
         target: &ClaimTarget,
         predicates: &[Predicate],
         requirement_provenance: Option<RequirementProvenance>,
+        numeric_assertions: &[NumericAssertion],
     ) -> String {
         claim_content_hash(
             &source,
@@ -215,6 +254,7 @@ impl Claim {
             target,
             predicates,
             &requirement_provenance,
+            numeric_assertions,
         )
     }
 }
@@ -226,6 +266,7 @@ fn claim_content_hash(
     target: &ClaimTarget,
     predicates: &[Predicate],
     requirement_provenance: &Option<RequirementProvenance>,
+    numeric_assertions: &[NumericAssertion],
 ) -> String {
     let payload = json!({
         "source": source,
@@ -234,6 +275,7 @@ fn claim_content_hash(
         "target": target,
         "predicates": predicates,
         "requirement_provenance": requirement_provenance,
+        "numeric_assertions": numeric_assertions,
     });
     blake3_hex(
         &canonical_bytes(&payload)
@@ -311,6 +353,7 @@ mod tests {
                 object: None,
             }],
             None,
+            Vec::new(),
         )
     }
 
@@ -328,6 +371,7 @@ mod tests {
             a.target.clone(),
             a.predicates.clone(),
             None,
+            Vec::new(),
         );
         assert_ne!(a.id, c.id);
     }

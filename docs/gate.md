@@ -66,8 +66,28 @@ Key design decisions:
 - **Per-session dedupe**: each assistant message is verified at most once per session. A `Map<string, string>` tracks the last checked assistant message ID; on idle the plugin skips messages already checked.
 - **In-flight guard**: a per-session boolean prevents concurrent gate runs for the same session.
 - **Loop prevention**: the injected message is a user message (never a new assistant completion), so the next `session.idle` event sees the same last assistant ID and the dedupe skips it. The gate also never emits a completion event — it only produces a decision JSON on stdout, which the plugin reads and may inject a prompt.
-- **Claim truncation**: assistant message text is capped at 8000 chars to bound the gate input.
+- **Completion claim extraction**: the gate extracts a concise completion claim from the assistant message before sending it to Griller. This prevents long evidence reports, markdown tables, line numbers, and cross-project references from polluting the Griller input. See [Claim extraction](#claim-extraction) below.
 - **Fail-closed surface**: if `griller-gate` is missing, misconfigured, or exits non-zero, the plugin injects a one-time notice that verification is unavailable (fail-closed).
+
+#### Claim extraction
+
+The gate uses a deterministic three-path extraction algorithm (no LLM) to produce the claim sent to Griller:
+
+1. **Explicit marker**: if the message contains `### Completion Claim`, the next non-empty line(s) after the marker become the claim.
+2. **Heuristic tail extraction**: the last 3 paragraphs are scanned for a sentence containing a completion keyword (`pass`, `complete`, `done`, `finish`, `implement`, `test`, `verify`, `build`, `run`, `check`, `success`). The first matching sentence from the tail is used.
+3. **Fallback**: the first sentence matching implementation keywords (`implemented`, `added`, `fixed`, `completed`, `verified`, `all tests pass`, `everything is done`, `ready`) is used.
+
+If no claim can be extracted, the gate returns `null` and fails closed (injects an unavailable notice).
+
+Hard bounds:
+- Maximum extracted claim length: 300 characters.
+- Empty extraction → fail closed.
+- Markdown formatting (bold, italics, inline code) is stripped.
+- Markdown tables and fenced code blocks are stripped before heuristic scanning.
+- Prompt injection patterns (`ignore.*griller`, `disregard.*gate`, `bypass.*check`, `report pass/approved`) in heuristic matches are rejected.
+- The original full message is preserved in `_diagnostic` for debugging but is never sent to Griller as evidence.
+
+This ensures that a 4,000-character evidence reconciliation report containing words like "CodeBro", "Contradiction", line numbers, and markdown tables produces a concise claim such as "Implemented the feature across all modules. All tests pass." rather than the entire transcript.
 
 ### Config in OpenCode
 
@@ -131,3 +151,26 @@ The gate uses the same `griller-mcp` server as the six tools (`griller.verify_cl
 ## Version
 
 The gate workspace version is `0.2.0`. The MCP schema stays `m8.0`; the gate decision schema is `g1.0`.
+
+## Resume flow behavior
+
+The gate reacts to `session.idle` events fired by OpenCode when the agent
+reaches a natural pause (e.g. after producing an assistant message). The
+current behavior is:
+
+1. `session.idle` fires automatically when the agent finishes its turn.
+2. The gate extracts the completion claim from the latest assistant message.
+3. If extraction succeeds, the gate runs `griller-gate check` and receives a
+   verdict.
+4. If the verdict is `Accepted`, nothing further happens — the session
+   remains idle and the agent may continue.
+5. If the verdict is `Blocked`, `Warned`, or `Unavailable`, the gate injects
+   a `noReply` user message into the session with the verdict details.
+6. The injected `noReply` message **does not** cause OpenCode to resume the
+   agent automatically. It appears as a user message in the conversation.
+   The agent must explicitly acknowledge or respond to it on its next turn.
+
+**Limitation**: the gate currently only *reports* blocks and warnings; it
+does not trigger automatic agent resumption. A BLOCK results in a user
+message in the chat, and the agent decides whether to act on it. Lifecycle
+redesign (automatic continuation after block resolution) is a separate task.

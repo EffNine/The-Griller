@@ -438,7 +438,7 @@ impl RunAttacksTool {
                     Ok(k) => k,
                     Err(e) => return Ok(CallToolResult::from(e)),
                 },
-                None => plan::applicable_attacks(&claim),
+                None => plan::applicable_attacks(&claim, &repo),
             };
 
         let env = griller_runtime::execution::EnvSource::from_host();
@@ -457,7 +457,7 @@ impl RunAttacksTool {
                 rationale: Some(format!("Adversarial check: {} against '{}'", kind, claim)),
             };
             if kind == griller_core::attack::AttackKind::Replay {
-                spec.command = plan::derive_replay_command(&claim);
+                spec.command = plan::derive_replay_command(&claim, &repo);
             }
             specs.push(spec);
         }

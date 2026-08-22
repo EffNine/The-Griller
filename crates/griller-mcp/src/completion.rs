@@ -232,7 +232,7 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
     // M5: plan applicable safe attacks, then execute them
     // -----------------------------------------------------------------------
     let attacks_start = Instant::now();
-    let planned_kinds = plan::applicable_attacks(&req.claim);
+    let planned_kinds = plan::applicable_attacks(&req.claim, &req.repo);
 
     let mut planned: Vec<AttackSpecSummary> = Vec::new();
     let mut results: Vec<AttackOutcomeInfo> = Vec::new();
@@ -255,7 +255,7 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
             rationale: Some(format!("Completion check: {}", kind)),
         };
         if kind == AttackKind::Replay {
-            let mut cmd = plan::derive_replay_command(&req.claim);
+            let mut cmd = plan::derive_replay_command(&req.claim, &req.repo);
             if let Some(c) = cmd.as_mut() {
                 c.working_directory = Some(req.repo.clone());
             }

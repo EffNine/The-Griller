@@ -57,6 +57,9 @@ pub struct NormalizedClaim {
     pub mode: NormalizationMode,
     /// Structural quality signal.
     pub quality: NormalizationQuality,
+    /// Numeric test-count assertions, when the claim expresses a count.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub numeric_assertions: Vec<crate::claim::NumericAssertion>,
 }
 
 impl NormalizedClaim {
@@ -75,6 +78,7 @@ impl NormalizedClaim {
         requirement_provenance: Option<RequirementProvenance>,
         mode: NormalizationMode,
         quality: NormalizationQuality,
+        numeric_assertions: Vec<crate::claim::NumericAssertion>,
     ) -> Self {
         let predicates = vec![proposition.to_predicate()];
         Self {
@@ -87,6 +91,7 @@ impl NormalizedClaim {
             requirement_provenance,
             mode,
             quality,
+            numeric_assertions,
         }
     }
 }

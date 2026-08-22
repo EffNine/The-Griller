@@ -16,6 +16,7 @@
 //! The original verbatim claim text is preserved on every [`NormalizedClaim`].
 
 use crate::claim::{ClaimInput, ClaimKind, ClaimTarget, TargetScope};
+use crate::claim::{CountSpec, NumericAssertion};
 use crate::error::NormalizationError;
 use crate::normalized::{NormalizationMode, NormalizationQuality, NormalizedClaim};
 use crate::predicate::{Polarity, Proposition};
@@ -59,6 +60,7 @@ pub fn normalize_deterministic(input: &ClaimInput) -> NormalizedClaim {
     let tokens = tokenize(&text);
     let proposition = build_proposition(&text, &tokens, &target);
     let quality = quality_of(&proposition, &target);
+    let numeric_assertions = detect_numeric_assertions(&text);
 
     NormalizedClaim::new(
         text,
@@ -69,6 +71,7 @@ pub fn normalize_deterministic(input: &ClaimInput) -> NormalizedClaim {
         input.requirement_provenance,
         NormalizationMode::Deterministic,
         quality,
+        numeric_assertions,
     )
 }
 
@@ -551,8 +554,256 @@ fn quality_of(proposition: &Proposition, target: &ClaimTarget) -> NormalizationQ
 }
 
 // ---------------------------------------------------------------------------
-// Fallback normalizer
+// Numeric assertion detection
 // ---------------------------------------------------------------------------
+
+/// Detect numeric completion assertions from claim text.
+///
+/// Returns `None` when no numeric assertion is recognized, preserving existing
+/// behavior for all non-numeric claims. Only creates assertions when the
+/// surrounding syntax clearly expresses a test/result count.
+///
+/// Patterns that produce assertions:
+///   - "<number> tests pass."                     → Exact(n)
+///   - "at least <number> tests pass."            → AtLeast(n)
+///   - "<number> tests pass with <number> failures" → Exact(n), failed=Some(m)
+///   - "<number> tests pass, <number> skipped"   → Exact(n), skipped=Some(m)
+///   - "<number> <scope> tests pass."             → Exact(n), qualifier=Some(scope)
+///
+/// Patterns that must NOT produce assertions (false positives avoided):
+///   - version numbers: "Release v0.2.0 is complete."
+///   - issue numbers: "Fixed issue #154."
+///   - line numbers: "Fixed at lines 154-160."
+///   - arbitrary numeric prose
+fn detect_numeric_assertions(text: &str) -> Vec<NumericAssertion> {
+    let lower = text.to_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let mut assertions = Vec::new();
+
+    // Helper: try to parse a u64 from a token string
+    let parse_u64 = |s: &str| -> Option<u64> { s.parse::<u64>().ok() };
+
+    // Helper: check if the token immediately before the word at `tests_idx`
+    // is a valid number (not a version, issue, line number, or port number).
+    // Returns None when there is no preceding token.
+    let is_valid_number_before_tests = |tests_idx: usize| -> Option<u64> {
+        let num_idx = tests_idx.checked_sub(1)?;
+        let t = tokens.get(num_idx)?;
+        // Excluded: starts with 'v' (version)
+        if t.starts_with('v') {
+            return None;
+        }
+        // Excluded: preceded by '#' (issue number)
+        if num_idx > 0 {
+            let prev = tokens.get(num_idx - 1).unwrap_or(&"");
+            if prev == &"#" {
+                return None;
+            }
+        }
+        // Excluded: preceded by "lines" (line number)
+        if num_idx > 1 {
+            let prev2 = tokens.get(num_idx - 2).unwrap_or(&"");
+            if prev2 == &"lines" {
+                return None;
+            }
+        }
+        // Excluded: preceded by "port" (port number)
+        if num_idx > 0 {
+            let prev = tokens.get(num_idx - 1).unwrap_or(&"");
+            if prev == &"port" {
+                return None;
+            }
+        }
+        parse_u64(t)
+    };
+
+    // Helper: check if token at position i is a scope marker word
+    let is_scope_marker = |i: usize| -> bool {
+        let t = tokens.get(i).unwrap_or(&"");
+        matches!(
+            *t,
+            "rust"
+                | "cargo"
+                | "node"
+                | "npm"
+                | "pytest"
+                | "python"
+                | "go"
+                | "test"
+                | "tests"
+                | "plugin"
+                | "extraction"
+        )
+    };
+
+    // Pattern: "at least <number> tests pass"
+    if contains_any(&lower, &["at least"]) {
+        if let Some(at_least_pos) = lower.find("at least") {
+            let after = &lower[at_least_pos + "at least".len()..];
+            let mut rest: Vec<&str> = after
+                .split(|c: char| !c.is_alphanumeric() && c != '\'')
+                .filter(|t| !t.is_empty())
+                .collect();
+            // Expect: number, "tests", "pass"
+            if let Some(num_str) = rest.first().and_then(|t| parse_u64(t)) {
+                rest.remove(0);
+                if rest.len() >= 2 && rest[0] == "tests" && rest[1] == "pass" {
+                    assertions.push(NumericAssertion {
+                        expected_passed: CountSpec::AtLeast(num_str),
+                        expected_failed: None,
+                        expected_skipped: None,
+                        scope_qualifier: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Pattern: "<number> tests pass" or "<number> <scope> tests pass"
+    for i in 0..tokens.len() {
+        // Check for "tests pass" at positions i, i+1
+        if i + 1 < tokens.len() && tokens[i] == "tests" && tokens[i + 1] == "pass" {
+            // Number must be immediately before "tests" at position i-1
+            if let Some(count) = is_valid_number_before_tests(i) {
+                let mut scope: Option<String> = None;
+                // Check for scope qualifier before the number (at i-2, i-3, etc.)
+                if i >= 2 && is_scope_marker(i - 2) {
+                    // Ensure it's not preceded by "at" which would make it an exclusion
+                    if i < 3 || tokens[i - 3] != "at" {
+                        scope = Some(tokens[i - 2].to_string());
+                    }
+                }
+                assertions.push(NumericAssertion {
+                    expected_passed: CountSpec::Exact(count),
+                    expected_failed: None,
+                    expected_skipped: None,
+                    scope_qualifier: scope,
+                });
+            }
+            break; // Only match first "tests pass" occurrence
+        }
+        // Check for "test pass" (singular) at positions i, i+1
+        if i + 1 < tokens.len() && tokens[i] == "test" && tokens[i + 1] == "pass" {
+            if let Some(count) = is_valid_number_before_tests(i) {
+                assertions.push(NumericAssertion {
+                    expected_passed: CountSpec::Exact(count),
+                    expected_failed: None,
+                    expected_skipped: None,
+                    scope_qualifier: None,
+                });
+            }
+            break;
+        }
+    }
+
+    // Pattern: "<number> tests pass with <number> failures"
+    for i in 0..tokens.len() {
+        // Check for "tests pass with" at positions i, i+1, i+2
+        if i + 3 < tokens.len()
+            && tokens[i] == "tests"
+            && tokens[i + 1] == "pass"
+            && tokens[i + 2] == "with"
+        {
+            if let Some(count) = is_valid_number_before_tests(i) {
+                if i + 5 < tokens.len() && tokens[i + 3] == "failures" {
+                    if let Some(fail_count) = parse_u64(tokens[i + 4]) {
+                        let mut scope: Option<String> = None;
+                        if i > 0 {
+                            let potential_scope = tokens[i - 1].to_string();
+                            if is_scope_marker(i - 1) && i > 1 && tokens[i - 2] != "at" {
+                                scope = Some(potential_scope);
+                            }
+                        }
+                        assertions.push(NumericAssertion {
+                            expected_passed: CountSpec::Exact(count),
+                            expected_failed: Some(fail_count),
+                            expected_skipped: None,
+                            scope_qualifier: scope,
+                        });
+                    }
+                }
+            }
+            break;
+        }
+        // Check for "test pass with"
+        if i + 3 < tokens.len()
+            && tokens[i] == "test"
+            && tokens[i + 1] == "pass"
+            && tokens[i + 2] == "with"
+        {
+            if let Some(count) = is_valid_number_before_tests(i) {
+                if i + 5 < tokens.len() && tokens[i + 3] == "failures" {
+                    if let Some(fail_count) = parse_u64(tokens[i + 4]) {
+                        assertions.push(NumericAssertion {
+                            expected_passed: CountSpec::Exact(count),
+                            expected_failed: Some(fail_count),
+                            expected_skipped: None,
+                            scope_qualifier: None,
+                        });
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    // Pattern: "<number> tests pass, <number> skipped"
+    for i in 0..tokens.len() {
+        // Check for "tests pass," at positions i, i+1, i+2 (comma at i+2)
+        if i + 3 < tokens.len()
+            && tokens[i] == "tests"
+            && tokens[i + 1] == "pass"
+            && tokens[i + 2] == ","
+        {
+            if let Some(count) = is_valid_number_before_tests(i) {
+                if i + 5 < tokens.len() && tokens[i + 3] == "skipped" {
+                    if let Some(skip_count) = parse_u64(tokens[i + 4]) {
+                        let mut scope: Option<String> = None;
+                        if i > 0 {
+                            let potential_scope = tokens[i - 1].to_string();
+                            if is_scope_marker(i - 1) && i > 1 && tokens[i - 2] != "at" {
+                                scope = Some(potential_scope);
+                            }
+                        }
+                        assertions.push(NumericAssertion {
+                            expected_passed: CountSpec::Exact(count),
+                            expected_failed: None,
+                            expected_skipped: Some(skip_count),
+                            scope_qualifier: scope,
+                        });
+                    }
+                }
+            }
+            break;
+        }
+        // Check for "test pass,"
+        if i + 3 < tokens.len()
+            && tokens[i] == "test"
+            && tokens[i + 1] == "pass"
+            && tokens[i + 2] == ","
+        {
+            if let Some(count) = is_valid_number_before_tests(i) {
+                if i + 5 < tokens.len() && tokens[i + 3] == "skipped" {
+                    if let Some(skip_count) = parse_u64(tokens[i + 4]) {
+                        assertions.push(NumericAssertion {
+                            expected_passed: CountSpec::Exact(count),
+                            expected_failed: None,
+                            expected_skipped: Some(skip_count),
+                            scope_qualifier: None,
+                        });
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    assertions
+}
 
 /// A normalizer that prefers an injected (e.g. LLM-backed) normalizer and
 /// falls back to deterministic normalization whenever the injected one fails.

@@ -141,6 +141,7 @@ impl Adjudicator {
             normalized.target.clone(),
             normalized.predicates.clone(),
             input.requirement_provenance,
+            Vec::new(),
         );
 
         Ok(ClaimAssessment {

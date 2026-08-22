@@ -18,3 +18,4 @@ pub mod hash;
 pub mod provenance;
 pub mod redaction;
 pub mod snapshot;
+pub mod test_metrics;

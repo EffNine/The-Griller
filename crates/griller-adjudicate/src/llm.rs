@@ -143,6 +143,7 @@ pub fn apply_proposal(base: &NormalizedClaim, proposal: &LlmClaimProposal) -> No
         base.requirement_provenance,
         NormalizationMode::Llm,
         quality,
+        Vec::new(),
     )
 }
 

@@ -33,6 +33,7 @@ fn mk_assessment(
             ClaimTarget::new(TargetScope::Command, None),
             vec![],
             None,
+            Vec::new(),
         ),
         normalized: NormalizedClaim {
             original: "test claim".into(),
@@ -49,6 +50,7 @@ fn mk_assessment(
             requirement_provenance: None,
             mode: NormalizationMode::Deterministic,
             quality: NormalizationQuality::Complete,
+            numeric_assertions: Vec::new(),
         },
         matrix: SupportMatrix::new(
             Proposition {
@@ -76,6 +78,7 @@ fn mk_claim(text: &str) -> Claim {
         ClaimTarget::new(TargetScope::Command, None),
         vec![],
         None,
+        Vec::new(),
     )
 }
 

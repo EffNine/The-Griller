@@ -35,6 +35,7 @@ fn assessment(kind: ClaimKind, status: EpistemicStatus) -> ClaimAssessment {
         normalized.target.clone(),
         normalized.predicates.clone(),
         None,
+        Vec::new(),
     );
     let matrix = SupportMatrix::new(normalized.proposition.clone(), vec![]);
     ClaimAssessment {
