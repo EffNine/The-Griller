@@ -220,5 +220,15 @@ it does not fix.
   (e.g. `factstorage`) would not match and would only get weak positive
   evidence.
 
+Guard-list notes:
+
+- `TASK_VERBS` includes past-tense/participle forms (`implemented`, `fixed`,
+  `replaced`, …) so that sentence-initial capitalization in completion claims
+  ("Replaced the gate plugin's …") never becomes a project-name candidate.
+  A foreign project named after the *next* word is still detected
+  ("Implemented Atlas P10.5.1 …" mismatches on `Atlas`).
+- Slash tokens whose segments are all numeric (`23/23`) are scores/fractions,
+  not path references.
+
 The full milestone report with the complete evidence tables and the M4→M3
 bridge is preserved in [history/m4-context.md](history/m4-context.md).

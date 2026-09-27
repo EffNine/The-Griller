@@ -176,6 +176,19 @@ const MODULE_MARKERS: &[&str] = &[
 const COMMAND_MARKERS: &[&str] = &["command", "commands", "build command"];
 const ARTIFACT_MARKERS: &[&str] = &["artifact", "artifacts", "binary", "binaries"];
 
+/// Quantifier/scope words that describe the *breadth* of a claim ("all
+/// workspace tests pass"), not a named isolation target. A whole-suite run
+/// supports such claims, so they must never become named test filters.
+const SCOPE_QUANTIFIERS: &[&str] = &[
+    "whole",
+    "entire",
+    "full",
+    "workspace",
+    "workspaces",
+    "repository",
+    "repo",
+];
+
 // ---------------------------------------------------------------------------
 // Tokenization
 // ---------------------------------------------------------------------------
@@ -242,7 +255,13 @@ fn has_completion_predicate(text: &str) -> bool {
 // Target inference
 // ---------------------------------------------------------------------------
 
-/// Try to extract a path-like token (contains `/` or a dotted extension).
+/// Try to extract a path-like token (carries a dotted file extension).
+///
+/// A bare slash is not enough: prose compounds like "pass/fail" or
+/// "timeout/double-execution" contain `/` but are not paths. Treating them as
+/// file targets made clean-git-diff evidence *contradict* honest claims. A
+/// token counts as a path only when some segment has an extension
+/// (`src/lib.rs`, `README.md`).
 fn extract_path_like(text: &str) -> Option<String> {
     for word in text.split_whitespace() {
         let cleaned = word.trim_matches(|c: char| {
@@ -250,7 +269,6 @@ fn extract_path_like(text: &str) -> Option<String> {
         });
         // A sentence-ending period is punctuation, not part of the path.
         let cleaned = cleaned.trim_end_matches('.');
-        let has_slash = cleaned.contains('/');
         let has_dot_ext = cleaned
             .rsplit_once('.')
             .map(|(stem, ext)| {
@@ -258,9 +276,10 @@ fn extract_path_like(text: &str) -> Option<String> {
                     && !ext.is_empty()
                     && ext.len() <= 6
                     && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                    && !ext.chars().all(|c| c.is_ascii_digit())
             })
             .unwrap_or(false);
-        if has_slash || has_dot_ext {
+        if has_dot_ext {
             return Some(cleaned.to_string());
         }
     }
@@ -282,7 +301,17 @@ fn infer_target(text: &str) -> ClaimTarget {
         .enumerate()
         .find(|(_, t)| TEST_MARKERS.contains(&t.as_str()))
     {
-        let name = descriptor_before(&tokens, idx);
+        // An enumerated verification list ("cargo fmt, cargo check, cargo
+        // test — all exit 0") describes the repository's whole local
+        // verification, not one named filter; a suite replay decides it.
+        let enumerates_other_domains = tokens
+            .iter()
+            .any(|t| BUILD_MARKERS.contains(&t.as_str()) || FORMAT_MARKERS.contains(&t.as_str()));
+        let name = if enumerates_other_domains {
+            None
+        } else {
+            descriptor_before(&tokens, idx)
+        };
         return ClaimTarget::new(TargetScope::Test, name);
     }
     if tokens.iter().any(|t| BUILD_MARKERS.contains(&t.as_str())) {
@@ -323,11 +352,21 @@ fn infer_target(text: &str) -> ClaimTarget {
     ClaimTarget::repository()
 }
 
-/// Content words before `idx` (stop words and scope markers excluded).
+/// Content words in the three-token window before `idx` (stop words and
+/// scope markers excluded).
+///
+/// The narrow window keeps the descriptor adjacent to its scope marker;
+/// anything farther back is narration ("Fixed the ... bugs"), not the name
+/// of a test filter.
 fn descriptor_before(tokens: &[String], idx: usize) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    for t in tokens[..idx].iter() {
-        if is_stop_word(t) || is_predicate_word(t) || is_negation(t) {
+    let start = idx.saturating_sub(3);
+    for t in tokens[start..idx].iter() {
+        if is_stop_word(t)
+            || is_predicate_word(t)
+            || is_negation(t)
+            || SCOPE_QUANTIFIERS.contains(&t.as_str())
+        {
             continue;
         }
         if TEST_MARKERS.contains(&t.as_str())
@@ -390,9 +429,44 @@ fn build_proposition(_text: &str, tokens: &[String], target: &ClaimTarget) -> Pr
     }
 }
 
-/// Find the first predicate verb and its canonical form + polarity.
+/// Find the canonical predicate verb and its polarity.
+///
+/// Narration verbs ("fixed", "removed") never outrank verification verbs: a
+/// completion claim that both narrates work and asserts an outcome is judged
+/// on the outcome — the part environment evidence can actually decide.
+/// Otherwise the earliest verb in the claim wins. Exception: an enumerated
+/// verification list ("cargo fmt, cargo check, cargo test — all exit 0")
+/// asserts one suite-level outcome, so the test-outcome verb is canonical and
+/// the suite replay decides it.
 fn extract_verb(tokens: &[String]) -> Option<(String, Polarity)> {
+    let is_narration =
+        |t: &str| PRED_EXIST.contains(&t) || PRED_CHANGE.contains(&t) || PRED_REMOVE.contains(&t);
+    let is_verification = |t: &str| {
+        PRED_PASS.contains(&t)
+            || PRED_FAIL.contains(&t)
+            || PRED_BUILD.contains(&t)
+            || PRED_FORMAT.contains(&t)
+    };
+    let is_test_outcome = |t: &str| PRED_PASS.contains(&t) || PRED_FAIL.contains(&t);
+
+    let has_test_marker = tokens.iter().any(|t| TEST_MARKERS.contains(&t.as_str()));
+    let enumerates_other_domain = tokens
+        .iter()
+        .any(|t| BUILD_MARKERS.contains(&t.as_str()) || FORMAT_MARKERS.contains(&t.as_str()));
+    if has_test_marker && enumerates_other_domain {
+        return scan_verb(tokens, &is_test_outcome).or_else(|| scan_verb(tokens, &is_verification));
+    }
+
+    scan_verb(tokens, &is_verification).or_else(|| scan_verb(tokens, &is_narration))
+}
+
+/// Left-to-right scan returning the first token accepted by `filter` and
+/// recognized as a predicate verb.
+fn scan_verb(tokens: &[String], filter: &dyn Fn(&str) -> bool) -> Option<(String, Polarity)> {
     for (i, t) in tokens.iter().enumerate() {
+        if !filter(t) {
+            continue;
+        }
         let negated = has_negation_before(tokens, i);
         if PRED_PASS.contains(&t.as_str()) {
             let polarity = if negated {

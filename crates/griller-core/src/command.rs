@@ -12,6 +12,92 @@ use serde::{Deserialize, Serialize};
 /// Default command timeout in milliseconds (30 seconds).
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// Timeout for derived replay commands (10 minutes).
+///
+/// Replays run the full verification suite in a cold, isolated worktree, so
+/// they must compile every dependency from scratch. The default 30-second
+/// timeout can never cover that; an honest "all tests pass" claim on any
+/// non-trivial Rust repository would always time out into UNVERIFIABLE.
+pub const REPLAY_TIMEOUT_MS: u64 = 600_000;
+
+// ---------------------------------------------------------------------------
+// Cross-process replay serialization
+// ---------------------------------------------------------------------------
+
+/// Cross-process exclusive lock serializing replay executions per repository.
+///
+/// Two simultaneous gate runs each spawn heavy verification commands
+/// (`cargo test --workspace`, …). Test suites are not always parallel-safe
+/// *across processes* — shared fixture directories under `CARGO_TARGET_TMPDIR`,
+/// fixed ports, singleton state — so two concurrent replays of the same
+/// repository can fail each other (exit != 0) and flip verdicts
+/// non-deterministically. The lock file lives in the system temp directory,
+/// keyed by the repository path, so every process replaying the same
+/// repository queues on the same lock. `flock` semantics release the lock
+/// even when a holder crashes.
+#[derive(Debug)]
+pub struct ReplayLock {
+    /// Held open for the lifetime of the lock; closing the file releases it.
+    _file: std::fs::File,
+}
+
+impl ReplayLock {
+    /// Acquire the replay lock for `repo`, waiting up to `timeout`.
+    ///
+    /// Returns `None` when the lock could not be acquired within `timeout`;
+    /// the caller then proceeds without serialization rather than failing the
+    /// verification pipeline on lock contention alone.
+    pub fn acquire(repo: &std::path::Path, timeout: std::time::Duration) -> Option<Self> {
+        use fs2::FileExt;
+
+        let key: String = repo
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect();
+        let lock_path = std::env::temp_dir().join(format!("griller-replay-{key}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        let start = std::time::Instant::now();
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Some(Self { _file: file }),
+                Err(_) if start.elapsed() < timeout => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod replay_lock_tests {
+    use super::*;
+
+    #[test]
+    fn replay_lock_excludes_second_holder_and_releases() {
+        let repo = std::env::temp_dir().join(format!("griller-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let first = ReplayLock::acquire(&repo, std::time::Duration::from_millis(100))
+            .expect("first acquire must succeed");
+        let second = ReplayLock::acquire(&repo, std::time::Duration::from_millis(150));
+        assert!(second.is_none(), "second holder must time out while held");
+
+        drop(first);
+        let third = ReplayLock::acquire(&repo, std::time::Duration::from_millis(1_000))
+            .expect("acquire must succeed after release");
+        drop(third);
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+}
+
 /// How the child process environment is derived from the caller's
 /// environment source (host environment or an injected map; see
 /// `griller_runtime::execution::EnvSource`).

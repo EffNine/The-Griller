@@ -358,9 +358,14 @@ fn python_test_command(repo: &Path) -> Option<CommandSpec> {
 }
 
 /// Build a safe command spec with the default allow-listed environment.
+///
+/// Derived replay commands get [`REPLAY_TIMEOUT_MS`]: they compile the whole
+/// dependency tree in a cold worktree, which the 30-second default can never
+/// cover.
 fn safe_command(executable: &str, args: &[&str]) -> CommandSpec {
     CommandSpec::new(executable)
         .with_args(args.iter().copied())
+        .with_timeout(griller_core::command::REPLAY_TIMEOUT_MS)
         .with_environment_policy(EnvironmentPolicy::InheritAllowlist(default_env_allowlist()))
 }
 

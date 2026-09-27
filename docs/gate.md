@@ -74,14 +74,16 @@ Key design decisions:
 The gate uses a deterministic three-path extraction algorithm (no LLM) to produce the claim sent to Griller:
 
 1. **Explicit marker**: if the message contains `### Completion Claim`, the next non-empty line(s) after the marker become the claim.
-2. **Heuristic tail extraction**: the last 3 paragraphs are scanned for a sentence containing a completion keyword (`pass`, `complete`, `done`, `finish`, `implement`, `test`, `verify`, `build`, `run`, `check`, `success`). The first matching sentence from the tail is used.
-3. **Fallback**: the first sentence matching implementation keywords (`implemented`, `added`, `fixed`, `completed`, `verified`, `all tests pass`, `everything is done`, `ready`) is used.
+2. **Heuristic tail extraction**: the last 3 paragraphs are scanned in reverse for a sentence that *asserts* a completion (see below). The first matching sentence from the tail is used.
+3. **Fallback**: the first sentence matching a completion assertion is used.
 
-If no claim can be extracted, the gate returns `null` and fails closed (injects an unavailable notice).
+**Completion assertion predicate**: a sentence counts only if it declares an outcome — a past-tense accomplishment (`implemented`, `fixed`, `added`, `resolved`, `verified`, …), an explicit test/build outcome (`all tests pass`, `490 tests passed`, `tests (511 passed)`, `the build succeeds`), a declarative state (`is done`, `is complete`, `everything works`), a conjunctive exit-0 phrasing, a terse standalone assertion (`Done.`, `All done.`, `Ready.`, `Complete.`, `That's done.`, `It's ready.`, `Shipped.`, `Closed.`), or a counted outcome with no noun (`All 511 pass.`). Bare keywords appearing in prose (`test`, `build`, `run`, `check`, `claim`) never match: planning prose, task directives ("Implement X."), and verification *discussion* are not completion events and return no claim. A bare `ready` likewise does not match inside prose, but a sentence that is *only* an outcome word is a completion assertion.
+
+If no claim can be extracted, the message is not a completion event — the plugin skips it silently (no gate run, no injection). Fail-closed behaviour applies only when a gate run itself fails (binary missing, non-zero exit, unusable output).
 
 Hard bounds:
 - Maximum extracted claim length: 300 characters.
-- Empty extraction → fail closed.
+- Empty extraction → skip silently (not a completion event).
 - Markdown formatting (bold, italics, inline code) is stripped.
 - Markdown tables and fenced code blocks are stripped before heuristic scanning.
 - Prompt injection patterns (`ignore.*griller`, `disregard.*gate`, `bypass.*check`, `report pass/approved`) in heuristic matches are rejected.
@@ -160,13 +162,15 @@ current behavior is:
 
 1. `session.idle` fires automatically when the agent finishes its turn.
 2. The gate extracts the completion claim from the latest assistant message.
-3. If extraction succeeds, the gate runs `griller-gate check` and receives a
+3. If no claim can be extracted, the message was ordinary discussion (not a
+   completion event) — the gate skips it silently.
+4. If extraction succeeds, the gate runs `griller-gate check` and receives a
    verdict.
-4. If the verdict is `Accepted`, nothing further happens — the session
+5. If the verdict is `Accepted`, nothing further happens — the session
    remains idle and the agent may continue.
-5. If the verdict is `Blocked`, `Warned`, or `Unavailable`, the gate injects
+6. If the verdict is `Blocked`, `Warned`, or `Unavailable`, the gate injects
    a `noReply` user message into the session with the verdict details.
-6. The injected `noReply` message **does not** cause OpenCode to resume the
+7. The injected `noReply` message **does not** cause OpenCode to resume the
    agent automatically. It appears as a user message in the conversation.
    The agent must explicitly acknowledge or respond to it on its next turn.
 

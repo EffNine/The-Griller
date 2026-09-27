@@ -95,25 +95,19 @@ function extract_completion_claim(
       const candidate = sentences[i]
       // Must be a reasonable length (not a single word, not a huge block).
       if (candidate.length < 5 || candidate.length > EXTRACTION_MAX_CHARS) continue
-      // Must contain at least one completion-indicating keyword.
-      const lower = candidate.toLowerCase()
-      if (
-        /\b(pass|complete|done|finish|implement|test|verify|build|run|check|success)\b/.test(
-          lower,
-        )
-      ) {
-        // Reject obvious injection patterns.
-        if (/ignore.*griller|disregard.*gate|bypass.*check|report\s+(pass|approved)/i.test(candidate)) {
-          continue
-        }
-        // Strip inline markdown artifacts but preserve sentence structure.
-        const clean = candidate
-          .replace(/\*\*/g, "")
-          .replace(/\*/g, "")
-          .replace(/`([^`]+)`/g, "$1")
-          .trim()
-        if (clean.length > 0) return { claim: clean, original }
+      // Must be a completion assertion, not mere discussion of verification.
+      if (!looks_like_completion_assertion(candidate)) continue
+      // Reject obvious injection patterns.
+      if (/ignore.*griller|disregard.*gate|bypass.*check|report\s+(pass|approved)/i.test(candidate)) {
+        continue
       }
+      // Strip inline markdown artifacts but preserve sentence structure.
+      const clean = candidate
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .replace(/`([^`]+)`/g, "$1")
+        .trim()
+      if (clean.length > 0) return { claim: clean, original }
     }
   }
 
@@ -127,23 +121,104 @@ function extract_completion_claim(
     // A completion claim must not begin with markdown structural syntax
     // (heading, fenced code, table separator). Reject and keep searching.
     if (starts_with_markdown_structure(candidate)) continue
-    const lower = candidate.toLowerCase()
-    if (
-      /\b(implemented|added|fixed|completed|resolved|verified|all\s+tests\s+pass|everything\s+(is|was)|claim|ready)\b/.test(
-        lower,
-      )
-    ) {
-      const clean = candidate
-        .replace(/\*\*/g, "")
-        .replace(/\*/g, "")
-        .replace(/`([^`]+)`/g, "$1")
-        .trim()
-      if (clean.length > 0) return { claim: clean, original }
-    }
+    if (!looks_like_completion_assertion(candidate)) continue
+    const clean = candidate
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/`([^`]+)`/g, "$1")
+      .trim()
+    if (clean.length > 0) return { claim: clean, original }
   }
 
   // No recognizable completion claim found.
   return { claim: null, original }
+}
+
+/**
+ * True when the candidate sentence is a completion *assertion* — declares an
+ * outcome — rather than mere discussion of verification.
+ *
+ * The historical keyword list (pass|complete|done|...|test|verify|build|run|
+ * check|claim) matched bare nouns, so technical discussion ("424 tests", "the
+ * gate replays", "run the tests") could turn into a completion claim and be
+ * blocked with unsupported. Of the 39 archived UNSUPPORTED_COMPLETION_BLOCK
+ * decisions, 12 were such extraction false positives; the other 25 were genuine
+ * completion claims the gate correctly refused for lack of evidence, and 2 were
+ * deliberate prompt-injection tests. A genuine completion asserts one of:
+ *
+ *   * a past-tense accomplishment ("Implemented the fix." / "Fixed the bug.")
+ *   * an explicit test/build/check outcome ("All tests pass." / "490 tests
+ *     passed" / "tests (511 passed)" / "the build succeeds")
+ *   * a declarative state ("is done" / "is complete" / "everything works")
+ *   * an "exit 0" outcome phrasing ("cargo fmt, cargo test — all exit 0")
+ *   * a terse standalone assertion ("Done." / "Ready." / "All done.")
+ *   * a counted outcome with no noun ("All 511 pass.")
+ *
+ * Imperative instructions ("Implement X.") and planning prose never match:
+ * a completion declares what *happened*, not what to do.
+ */
+function looks_like_completion_assertion(candidate: string): boolean {
+  const lower = candidate.toLowerCase()
+  // Past-tense accomplishments.
+  if (
+    /\b(implemented|added|fixed|completed|resolved|merged|shipped|deployed|verified|refactored|removed|updated|migrated|rewritten?|rebuilt|finished|succeeded)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Explicit test outcomes: "tests pass", "all tests passed", "490 tests
+  // pass", "tests (511 passed)".
+  if (
+    /\b(?:all\s+)?(?:\d+\s+)?tests?\s*\(?\s*(?:\d+\s+)?(pass(ed|es|ing)?|fail(ed|s|ing)?|green|clean|succeeded?)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Conjunctive outcomes: "all tests, checks and builds pass / are green".
+  if (
+    /\ball\s+(tests|checks|builds?|steps|suites?|specs?)\b[^.!?]*(passed?|pass(es|ing)?|succeeded?|succeeds|green|clean|complete[d]?|exit)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Build outcomes: "the build succeeds/is green".
+  if (
+    /\b(?:the\s+)?builds?\s+(succeeded?|succeeds|pass(ed|es)?|fail(ed|s)?|green|clean)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Declarative state: "is done / is complete / is verified".
+  if (
+    /\b(is|are|was|were|been|being)\s+(done|complete[d]?|finished|passed|passing|verified|implemented|fixed|green|clean|working|ready|merged|removed|deleted|deployed|shipped)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // "everything works/passes/...".
+  if (
+    /\beverything\s+(is|was|works|passed|passes|builds|compiles|checks|succeeds)\b/.test(lower)
+  )
+    return true
+  // "…and all exit 0" — the classic conjunctive verification outcome.
+  if (/\b(and|all|both)\b[^.!?]*\bexit(ed|s)?\s+0\b/.test(lower)) return true
+  // Terse standalone assertion: the whole sentence is the outcome. These carry
+  // no auxiliary and no noun, so rule 5 ("is done") cannot match them and the
+  // bare-noun net this predicate replaced used to. Restores coverage for
+  // "Done." / "All done." / "Ready." / "Complete." / "That's done." /
+  // "It's ready." / "Shipped." / "Finished." / "Merged." / "Closed.".
+  // The optional leading contraction is required for "That's done." / "It's
+  // ready.", which are genuine assertions and were otherwise ungated.
+  if (
+    /^\W*([a-z]+['’]s\s+)?(all\s+)?(done|complete[d]?|finished|ready|shipped|merged|closed)\b[\W]*$/i.test(
+      candidate,
+    )
+  )
+    return true
+  // Counted outcome with no noun: "All 511 pass." Rule 2 requires the literal
+  // token "tests", so a bare count + outcome is otherwise ungated.
+  if (/^\W*all\s+\d+\s+(pass(ed|es)?|fail(ed|s)?|green|clean)\b/i.test(candidate)) return true
+  return false
 }
 
 /**
@@ -314,14 +389,15 @@ export const GrillerGate: Plugin = async ({ client, directory }) => {
       const { claim: extractedClaim, original: originalMessage } =
         extract_completion_claim(text)
       if (!extractedClaim) {
-        // Completion claim unavailable — fail closed.
-        await log("warn", "completion claim could not be extracted", {
+        // No recognizable completion assertion in this message. An ordinary
+        // assistant message is not a completion event — skip silently rather
+        // than failing closed (the old behaviour injected an "unavailable"
+        // notice onto every technical discussion message).
+        state.lastChecked = latest.info.id
+        await log("info", "no completion assertion in message; skipping gate", {
           sessionID,
           messageLength: text.length,
         })
-        // Still mark as checked so we don't retry the same message.
-        state.lastChecked = latest.info.id
-        await handleDecision(sessionID, state, latest.info.id, null)
         return
       }
 

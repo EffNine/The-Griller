@@ -48,8 +48,8 @@ pub enum NormalizationQuality {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
-    /// A project/repository/product name candidate (explicit, capitalized or
-    /// decorated). This is the kind that can produce an explicit mismatch.
+    /// A project/repository/product name candidate (explicitly capitalized).
+    /// This is the kind that can produce an explicit mismatch.
     Project,
     /// A file path reference (contains `/`, a dotted extension, or `./`).
     Path,

@@ -579,6 +579,7 @@ fn collect_for_claim(
     if let Some((exe, args)) = command {
         let spec = CommandSpec::new(exe)
             .with_args(args.iter().map(|s| s.to_string()))
+            .with_timeout(griller_core::command::REPLAY_TIMEOUT_MS)
             .with_environment_policy(EnvironmentPolicy::InheritAllowlist(default_env_allowlist()))
             .with_network_policy(NetworkPolicy::Disabled);
         let collector = CommandExecutionCollector::new(env.clone());
@@ -683,7 +684,9 @@ pub fn attack_run(repo: &Path, claim: &str, pretty: bool, auto_collect: bool) ->
     };
 
     // Execute cargo test in the working directory
-    let spec = CommandSpec::new("cargo").with_args(["test"]);
+    let spec = CommandSpec::new("cargo")
+        .with_args(["test"])
+        .with_timeout(griller_core::command::REPLAY_TIMEOUT_MS);
 
     let collector = CommandExecutionCollector::new(env.clone());
     match collector.collect(&spec, &dir) {

@@ -85,22 +85,16 @@ function extract_completion_claim(
     for (let i = sentences.length - 1; i >= 0; i--) {
       const candidate = sentences[i]
       if (candidate.length < 5 || candidate.length > EXTRACTION_MAX_CHARS) continue
-      const lower = candidate.toLowerCase()
-      if (
-        /\b(pass|complete|done|finish|implement|test|verify|build|run|check|success)\b/.test(
-          lower,
-        )
-      ) {
-        if (/ignore.*griller|disregard.*gate|bypass.*check|report\s+(pass|approved)/i.test(candidate)) {
-          continue
-        }
-        const clean = candidate
-          .replace(/\*\*/g, "")
-          .replace(/\*/g, "")
-          .replace(/`([^`]+)`/g, "$1")
-          .trim()
-        if (clean.length > 0) return { claim: clean, original }
+      if (!looks_like_completion_assertion(candidate)) continue
+      if (/ignore.*griller|disregard.*gate|bypass.*check|report\s+(pass|approved)/i.test(candidate)) {
+        continue
       }
+      const clean = candidate
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .replace(/`([^`]+)`/g, "$1")
+        .trim()
+      if (clean.length > 0) return { claim: clean, original }
     }
   }
 
@@ -114,22 +108,100 @@ function extract_completion_claim(
     // A completion claim must not begin with markdown structural syntax
     // (heading, fenced code, table separator). Reject and keep searching.
     if (starts_with_markdown_structure(candidate)) continue
-    const lower = candidate.toLowerCase()
-    if (
-      /\b(implemented|added|fixed|completed|resolved|verified|all\s+tests\s+pass|everything\s+(is|was)|claim|ready)\b/.test(
-        lower,
-      )
-    ) {
-      const clean = candidate
-        .replace(/\*\*/g, "")
-        .replace(/\*/g, "")
-        .replace(/`([^`]+)`/g, "$1")
-        .trim()
-      if (clean.length > 0) return { claim: clean, original }
-    }
+    if (!looks_like_completion_assertion(candidate)) continue
+    const clean = candidate
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/`([^`]+)`/g, "$1")
+      .trim()
+    if (clean.length > 0) return { claim: clean, original }
   }
 
   return { claim: null, original }
+}
+
+/**
+ * True when the candidate sentence is a completion *assertion* — declares an
+ * outcome — rather than mere discussion of verification.
+ *
+ * The historical keyword list (pass|complete|done|...|test|verify|build|run|
+ * check|claim) matched bare nouns, so any technical discussion ("424 tests",
+ * "the gate replays", "run the tests") turned into a completion claim and
+ * got blocked with unsupported. A genuine completion asserts one of:
+ *
+ *   * a past-tense accomplishment ("Implemented the fix." / "Fixed the bug.")
+ *   * an explicit test/build/check outcome ("All tests pass." / "490 tests
+ *     passed" / "tests (511 passed)" / "the build succeeds")
+ *   * a declarative state ("is done" / "is complete" / "everything works")
+ *   * an "exit 0" outcome phrasing ("cargo fmt, cargo test — all exit 0")
+ *
+ * Imperative instructions ("Implement X.") and planning prose never match:
+ * a completion declares what *happened*, not what to do.
+ *
+ * Kept in sync with looks_like_completion_assertion in griller-gate.ts.
+ */
+function looks_like_completion_assertion(candidate: string): boolean {
+  const lower = candidate.toLowerCase()
+  // Past-tense accomplishments.
+  if (
+    /\b(implemented|added|fixed|completed|resolved|merged|shipped|deployed|verified|refactored|removed|updated|migrated|rewritten?|rebuilt|finished|succeeded)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Explicit test outcomes: "tests pass", "all tests passed", "490 tests
+  // pass", "tests (511 passed)".
+  if (
+    /\b(?:all\s+)?(?:\d+\s+)?tests?\s*\(?\s*(?:\d+\s+)?(pass(ed|es|ing)?|fail(ed|s|ing)?|green|clean|succeeded?)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Conjunctive outcomes: "all tests, checks and builds pass / are green".
+  if (
+    /\ball\s+(tests|checks|builds?|steps|suites?|specs?)\b[^.!?]*(passed?|pass(es|ing)?|succeeded?|succeeds|green|clean|complete[d]?|exit)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Build outcomes: "the build succeeds/is green".
+  if (
+    /\b(?:the\s+)?builds?\s+(succeeded?|succeeds|pass(ed|es)?|fail(ed|s)?|green|clean)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // Declarative state: "is done / is complete / is verified".
+  if (
+    /\b(is|are|was|were|been|being)\s+(done|complete[d]?|finished|passed|passing|verified|implemented|fixed|green|clean|working|ready|merged|removed|deleted|deployed|shipped)\b/.test(
+      lower,
+    )
+  )
+    return true
+  // "everything works/passes/...".
+  if (
+    /\beverything\s+(is|was|works|passed|passes|builds|compiles|checks|succeeds)\b/.test(lower)
+  )
+    return true
+  // "…and all exit 0" — the classic conjunctive verification outcome.
+  if (/\b(and|all|both)\b[^.!?]*\bexit(ed|s)?\s+0\b/.test(lower)) return true
+  // Terse standalone assertion: the whole sentence is the outcome. These carry
+  // no auxiliary and no noun, so rule 5 ("is done") cannot match them and the
+  // bare-noun net this predicate replaced used to. Restores coverage for
+  // "Done." / "All done." / "Ready." / "Complete." / "That's done." /
+  // "It's ready." / "Shipped." / "Finished." / "Merged." / "Closed.".
+  // The optional leading contraction is required for "That's done." / "It's
+  // ready.", which are genuine assertions and were otherwise ungated.
+  if (
+    /^\W*([a-z]+['’]s\s+)?(all\s+)?(done|complete[d]?|finished|ready|shipped|merged|closed)\b[\W]*$/i.test(
+      candidate,
+    )
+  )
+    return true
+  // Counted outcome with no noun: "All 511 pass." Rule 2 requires the literal
+  // token "tests", so a bare count + outcome is otherwise ungated.
+  if (/^\W*all\s+\d+\s+(pass(ed|es)?|fail(ed|s)?|green|clean)\b/i.test(candidate)) return true
+  return false
 }
 
 describe("extract_completion_claim", () => {
@@ -301,12 +373,43 @@ Zero modifications to M2/M3/M4/M5/M7 logic, policy table, or verification semant
     expect(claim).toContain("tests pass")
   })
 
-  it("UNCHANGED: wrong-project claim still passes through extraction to Griller", () => {
-    // Extraction is only a pass-through for a claim that itself names another
-    // project; the MISMATCH_CONTEXT_BLOCK decision belongs to M4, not extraction.
+  it("CHANGED: imperative task directives are no longer completion claims", () => {
+    // "Implement X." is an instruction, not an assertion about completed
+    // work. The old keyword list matched the bare verb and grilled planning
+    // messages with unsupported — the over-aggressive extraction bug.
     const { claim } = extract_completion_claim("Implement Atlas P10.5.1 Fact Store.")
-    expect(claim).toBe("Implement Atlas P10.5.1 Fact Store.")
+    expect(claim).toBeNull()
+  })
+
+  it("UNCHANGED: past-tense wrong-project claim still passes through to Griller (M4)", () => {
+    // Extraction stays a pass-through for claims that name another project;
+    // MISMATCH_CONTEXT_BLOCK remains M4's decision, not extraction's.
+    const { claim } = extract_completion_claim("Implemented Atlas P10.5.1 Fact Store.")
+    expect(claim).toBe("Implemented Atlas P10.5.1 Fact Store.")
     expect(claim).toContain("Atlas")
+  })
+
+  it("REG: planning/discussion prose returns null (real-world false block)", () => {
+    // The actual assistant message that previously got extracted as a claim
+    // and blocked with UNSUPPORTED_COMPLETION_BLOCK.
+    const text =
+      "Order of priority:\n\n" +
+      "1. **Commit** — do this first; until you commit, the gate replays HEAD and every new claim is judged by the broken grader.\n\n" +
+      "2. **Warm-replay worktree** — a disposable worktree plus a shared target dir would cut replay from minutes to seconds.\n\n" +
+      "3. Resolve the CLI vs MCP mismatch.\n\n" +
+      "4. Cleanup: README says 424 tests (currently 511), the cargo object-token jumble is cosmetic noise, and there's no record of today's fixes in docs/history/. Long tail: replay coverage beyond the Rust ecosystem."
+    const { claim } = extract_completion_claim(text)
+    expect(claim).toBeNull()
+  })
+
+  it("REG: casual unmarked completions still extract", () => {
+    expect(extract_completion_claim("Done. All tests pass.").claim).toBe("All tests pass.")
+    expect(extract_completion_claim("Fixed the login bug.").claim).toBe("Fixed the login bug.")
+  })
+
+  it("REG: numeric and parenthesized test outcomes extract", () => {
+    expect(extract_completion_claim("All 490 tests pass.").claim).toContain("tests pass")
+    expect(extract_completion_claim("cargo test ran clean: tests (511 passed)").claim).not.toBeNull()
   })
 
   it("UNCHANGED: lying completion still reaches Griller (extraction does not censor it)", () => {
@@ -317,5 +420,56 @@ Zero modifications to M2/M3/M4/M5/M7 logic, policy table, or verification semant
     )
     expect(claim).toContain("tests pass")
     expect(claim!.length).toBeLessThanOrEqual(EXTRACTION_MAX_CHARS)
+  })
+
+  it("REG: terse completion assertions extract; near-miss prose stays null", () => {
+    // Regression table for the terse-assertion gap found in Phase 1.1. The
+    // structured predicate has no auxiliary and no noun to key on, so these
+    // genuine completion assertions were silently ungated: an extracted-null
+    // means the gate never runs, produces no verdict and writes no decision
+    // record. Each MUST EXTRACT case below was verified ungated before the fix.
+    const MUST_EXTRACT: string[] = [
+      "Done.", // regression
+      "All done.", // regression
+      "Done!", // regression
+      "Ready.", // regression
+      "That's done.", // regression (leading contraction)
+      "Complete.", // regression
+      "It's ready.", // regression (leading contraction)
+      "All 511 pass.", // regression (counted outcome, no noun)
+      "Shipped.", // gain
+      "Finished.", // gain
+      "Merged it.", // gain (covered by rule 1)
+      "Completed.", // gain
+      "Tests pass.",
+    ]
+    for (const text of MUST_EXTRACT) {
+      expect(extract_completion_claim(text).claim, `MUST EXTRACT: ${text}`).not.toBeNull()
+    }
+
+    // Adjacent prose that must NOT be promoted to a completion assertion. These
+    // guard against over-correcting the predicate.
+    const MUST_REMAIN_NULL: string[] = [
+      "All set.",
+      "Wrapped up.",
+      "Handled.",
+      "Taken care of.",
+      "All good.",
+      "Sorted.",
+      "Pushed it.",
+      "There are 424 tests.",
+      "The test suite is slow.",
+      "The build directory is 17G.",
+      "Let me check the logs.",
+      "You can run the tests locally.",
+      "Implement Atlas P10.5.1 Fact Store.",
+    ]
+    for (const text of MUST_REMAIN_NULL) {
+      expect(extract_completion_claim(text).claim, `MUST REMAIN NULL: ${text}`).toBeNull()
+    }
+
+    // The quality improvement must survive the fix: the substantive assertion
+    // is extracted, not the contentless leading "Done.".
+    expect(extract_completion_claim("Done. All tests pass.").claim).toBe("All tests pass.")
   })
 })

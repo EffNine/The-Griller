@@ -34,7 +34,7 @@ use griller_adjudicate::status::EpistemicStatus;
 use griller_context::assess::ContextAssessor;
 use griller_context::status::ContextStatus;
 use griller_core::attack::{AttackKind, AttackOutcome, AttackResult, AttackSpec};
-use griller_core::command::CommandSpec;
+use griller_core::command::{CommandSpec, ReplayLock, REPLAY_TIMEOUT_MS};
 use griller_core::evidence::Evidence;
 use griller_policy::context::ContextFinding;
 use griller_policy::decision::RequiredAction;
@@ -277,15 +277,34 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
             rationale: spec.rationale.clone(),
         });
 
+        if kind == AttackKind::Replay {
+            // Single execution: the replay is captured once as command-output
+            // evidence; the attack outcome is derived from that same run.
+            // (Executing separately for outcome and evidence would run the
+            // command twice in two cold worktrees.)
+            match replay_evidence(&spec, &req.repo, &env) {
+                Ok(ev) => {
+                    let (outcome, explanation) = replay_outcome_of(&ev);
+                    let evidence_refs = vec![ev.id.to_string()];
+                    combined_evidence.push(ev);
+                    results.push(AttackOutcomeInfo {
+                        attack_id: spec.id.to_string(),
+                        kind,
+                        outcome,
+                        explanation,
+                        evidence_refs,
+                    });
+                }
+                Err(e) => {
+                    rejected.push(format!("{}: {e}", kind));
+                    failed_kinds.push(kind);
+                }
+            }
+            continue;
+        }
+
         match execute_attack(&spec, &req.repo, &env) {
             Ok(result) => {
-                if kind == AttackKind::Replay {
-                    // Replay produces real executable evidence; feed it back
-                    // into adjudication so M2 can match against it.
-                    if let Ok(ev) = replay_evidence(&spec, &req.repo, &env) {
-                        combined_evidence.push(ev);
-                    }
-                }
                 results.push(AttackOutcomeInfo {
                     attack_id: spec.id.to_string(),
                     kind,
@@ -455,6 +474,11 @@ pub fn execute_attack(
             if spec.command.is_none() {
                 return Err("replay requires a command".into());
             }
+            // Serialize replays across processes: two simultaneous gate runs
+            // must not race their verification suites (shared fixture state,
+            // ports), or each can refute the other non-deterministically.
+            let _replay_lock =
+                ReplayLock::acquire(repo, std::time::Duration::from_millis(REPLAY_TIMEOUT_MS));
             // Replay executes in an isolated worktree so the user's working
             // tree is never mutated (in-place fallback for non-git paths).
             // The worktree stays alive until execution completes.
@@ -503,7 +527,41 @@ fn replay_evidence(spec: &AttackSpec, repo: &Path, env: &EnvSource) -> Result<Ev
         kind: McpErrorKind::InternalError,
         message: "replay evidence requires a command".into(),
     })?;
+    // Same cross-process serialization as the attack path.
+    let _replay_lock =
+        ReplayLock::acquire(repo, std::time::Duration::from_millis(REPLAY_TIMEOUT_MS));
     run_command_in_isolation(&cmd, repo, env)
+}
+
+/// Derive the replay attack outcome from its captured evidence.
+///
+/// Mirrors `AttackExecutor::outcome_for_status` so one execution can serve
+/// both as M2 evidence and as the M5 attack result.
+fn replay_outcome_of(ev: &Evidence) -> (AttackOutcome, String) {
+    match ev.content.as_command_output() {
+        Some(out) => match out.outcome() {
+            griller_core::command::CommandOutcome::Success => (
+                AttackOutcome::NoObjection,
+                format!("replay succeeded (exit 0, {}ms)", out.duration_ms),
+            ),
+            griller_core::command::CommandOutcome::Failed => (
+                AttackOutcome::Refuted,
+                format!(
+                    "replay failed (exit {}, {}ms)",
+                    out.exit_code.unwrap_or(-1),
+                    out.duration_ms
+                ),
+            ),
+            _ => (
+                AttackOutcome::ExecutionFailed,
+                "replay could not execute; the outcome is undetermined".to_string(),
+            ),
+        },
+        None => (
+            AttackOutcome::ExecutionFailed,
+            "replay evidence is not command output".to_string(),
+        ),
+    }
 }
 
 fn run_command_in_isolation(

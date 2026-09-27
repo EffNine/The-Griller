@@ -14,7 +14,11 @@ pub const MAX_ATTACKS: usize = 20;
 /// Default per-attack timeout in milliseconds.
 pub const DEFAULT_ATTACK_TIMEOUT_MS: u64 = 30_000;
 /// Maximum per-attack timeout in milliseconds.
-pub const MAX_TIMEOUT_MS: u64 = 120_000;
+///
+/// Aligned with [`REPLAY_TIMEOUT_MS`](griller_core::command::REPLAY_TIMEOUT_MS):
+/// a full-suite replay in a cold worktree is the slowest legitimate attack, and
+/// callers must be able to request exactly that budget.
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Maximum number of evidence/context records echoed in a response.
 pub const MAX_EVIDENCE_SNIPPETS: usize = 10;
 

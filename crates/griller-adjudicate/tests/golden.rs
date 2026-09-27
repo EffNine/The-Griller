@@ -456,3 +456,125 @@ fn moderate_symbol_contradiction_is_uncertain() {
         .reasons
         .contains(&Reason::ModerateContradictionOnly));
 }
+
+// ---------------------------------------------------------------------------
+// Scope quantifiers are breadth, not named isolation targets.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scope_quantifier_targets_are_repository_wide() {
+    // Regression: "All workspace tests pass" used to extract the named test
+    // target "workspace", so whole-suite replay evidence was judged unable to
+    // isolate it. Quantifiers describe breadth; they must yield an unnamed,
+    // repository-wide target.
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "All workspace tests pass.",
+    ));
+    assert_eq!(
+        normalized.target.scope,
+        griller_adjudicate::claim::TargetScope::Test
+    );
+    assert_eq!(normalized.target.name, None);
+}
+
+#[test]
+fn whole_suite_evidence_supports_all_tests_claims() {
+    let assessment = assess("All workspace tests pass.", &[test_ok()]);
+    assert_eq!(assessment.status, EpistemicStatus::Verified);
+}
+
+#[test]
+fn named_test_targets_still_require_isolation() {
+    // A genuinely named filter keeps the stricter rule: a full-suite run does
+    // not prove a subset claim.
+    let assessment = assess("authentication tests pass.", &[test_ok()]);
+    assert_ne!(assessment.status, EpistemicStatus::Verified);
+}
+
+// ---------------------------------------------------------------------------
+// Prose slash-compounds are not file targets.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prose_slash_compounds_are_not_file_targets() {
+    // Regression: "timeout/double-execution" contains `/` and used to become
+    // the File target of the whole claim, so clean-git-diff evidence
+    // "contradicted" an honest summary (CONTRADICTED_COMPLETION_BLOCK).
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Fixed replay timeout/double-execution; all workspace tests pass.",
+    ));
+    assert_ne!(
+        normalized.target.scope,
+        griller_adjudicate::claim::TargetScope::File
+    );
+}
+
+#[test]
+fn extension_paths_are_still_file_targets() {
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Update src/lib.rs so that all tests pass.",
+    ));
+    assert_eq!(normalized.target.name.as_deref(), Some("src/lib.rs"));
+}
+
+#[test]
+fn issue_identifiers_are_not_file_targets() {
+    // `P10.5.1` has dot-separated numeric segments; it is an issue identifier,
+    // never a path with an extension.
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Implement Atlas P10.5.1 Fact Store. All tests pass.",
+    ));
+    assert_ne!(
+        normalized.target.scope,
+        griller_adjudicate::claim::TargetScope::File
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Verification verbs outrank narration verbs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verification_verbs_outrank_narration_verbs() {
+    // Regression: "Fixed ..." narrates work, and the leading past-tense verb
+    // used to classify the whole claim as FileChanged with a pseudo-path
+    // target ("griller_false_block_bugs"), so clean-diff evidence
+    // *contradicted* honest summaries. The checkable completion assertion is
+    // the trailing verification claim; judge that.
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Fixed replay handling; all workspace tests pass.",
+    ));
+    assert_eq!(normalized.proposition.predicate, "pass");
+}
+
+#[test]
+fn enumerated_verification_lists_are_suite_level_test_claims() {
+    // Regression: in "cargo fmt, cargo check, cargo test — all exit 0", the
+    // earliest command word ("fmt") used to win, classifying the claim as a
+    // formatting claim no test replay could support. An enumerated list is a
+    // single suite-level outcome; the test replay decides it.
+    let normalized = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Fixed stuff: cargo fmt, cargo check, cargo test (9 passed) all exit 0.",
+    ));
+    assert_eq!(normalized.proposition.predicate, "pass");
+    assert_eq!(normalized.target.name, None);
+}
+
+#[test]
+fn single_domain_verification_keeps_its_domain() {
+    // Without enumeration across domains, positional order still rules.
+    let build = griller_adjudicate::normalizer::normalize_deterministic(&input("Build succeeds."));
+    assert_eq!(build.proposition.predicate, "build");
+
+    let format = griller_adjudicate::normalizer::normalize_deterministic(&input(
+        "Project formatting passes.",
+    ));
+    assert_eq!(format.proposition.predicate, "format");
+}
+
+#[test]
+fn pure_narration_claims_still_classify_as_changes() {
+    let normalized =
+        griller_adjudicate::normalizer::normalize_deterministic(&input("Fixed the login bug."));
+    assert_eq!(normalized.proposition.predicate, "change");
+}

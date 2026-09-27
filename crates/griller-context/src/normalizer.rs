@@ -2971,6 +2971,201 @@ const TASK_VERBS: &[&str] = &[
     "phantom",
     "dirty",
     "clean",
+    // Past-tense / participle forms of report verbs. Completion claims begin
+    // with them ("Replaced the gate plugin's ...", "Implemented Atlas ..."),
+    // and sentence-initial capitalization must never turn a report verb into
+    // a project-name candidate.
+    "replaced",
+    "implemented",
+    "added",
+    "removed",
+    "deleted",
+    "created",
+    "updated",
+    "upgraded",
+    "downgraded",
+    "fixed",
+    "patched",
+    "made",
+    "wrote",
+    "written",
+    "built",
+    "rebuilt",
+    "compiled",
+    "ran",
+    "executed",
+    "deployed",
+    "released",
+    "published",
+    "shipped",
+    "installed",
+    "uninstalled",
+    "migrated",
+    "ported",
+    "converted",
+    "transformed",
+    "refactored",
+    "restructured",
+    "reworked",
+    "rewrote",
+    "rewritten",
+    "redesigned",
+    "renamed",
+    "moved",
+    "copied",
+    "duplicated",
+    "synced",
+    "synchronized",
+    "merged",
+    "rebased",
+    "squashed",
+    "committed",
+    "pushed",
+    "pulled",
+    "fetched",
+    "cloned",
+    "branched",
+    "tagged",
+    "pinned",
+    "locked",
+    "unlocked",
+    "enabled",
+    "disabled",
+    "toggled",
+    "switched",
+    "configured",
+    "initialized",
+    "bootstrapped",
+    "scaffolded",
+    "generated",
+    "produced",
+    "rendered",
+    "serialized",
+    "deserialized",
+    "parsed",
+    "formatted",
+    "linted",
+    "checked",
+    "verified",
+    "validated",
+    "tested",
+    "asserted",
+    "confirmed",
+    "approved",
+    "rejected",
+    "accepted",
+    "reviewed",
+    "audited",
+    "inspected",
+    "examined",
+    "analyzed",
+    "profiled",
+    "benchmarked",
+    "measured",
+    "compared",
+    "optimized",
+    "tuned",
+    "tweaked",
+    "adjusted",
+    "calibrated",
+    "debugged",
+    "diagnosed",
+    "triaged",
+    "mitigated",
+    "remediated",
+    "prevented",
+    "detected",
+    "reported",
+    "documented",
+    "summarized",
+    "explained",
+    "described",
+    "annotated",
+    "commented",
+    "noted",
+    "mentioned",
+    "alerted",
+    "notified",
+    "reminded",
+    "scheduled",
+    "queued",
+    "cached",
+    "prefetched",
+    "hydrated",
+    "streamed",
+    "throttled",
+    "debounced",
+    "retried",
+    "aborted",
+    "canceled",
+    "cancelled",
+    "resumed",
+    "paused",
+    "continued",
+    "waited",
+    "cleaned",
+    "sanitized",
+    "escaped",
+    "encrypted",
+    "hashed",
+    "signed",
+    "secured",
+    "hardened",
+    "exposed",
+    "wired",
+    "connected",
+    "disconnected",
+    "integrated",
+    "supported",
+    "extended",
+    "expanded",
+    "reduced",
+    "simplified",
+    "clarified",
+    "resolved",
+    "closed",
+    "reopened",
+    "assigned",
+    "labeled",
+    "labelled",
+    "estimated",
+    "planned",
+    "prioritized",
+    "finalized",
+    "completed",
+    "finished",
+    "wrapped",
+    "delivered",
+    "addressed",
+    "handled",
+    "introduced",
+    "deprecated",
+    "archived",
+    "restored",
+    "purged",
+    "rotated",
+    "unified",
+    "normalized",
+    "standardized",
+    "deduped",
+    "deduplicated",
+    "consolidated",
+    "flattened",
+    "inlined",
+    "minified",
+    "compressed",
+    "transpiled",
+    "downloaded",
+    "uploaded",
+    "imported",
+    "exported",
+    "bundled",
+    "linked",
+    "loaded",
+    "saved",
+    "stored",
+    "persisted",
+    "improved",
 ];
 
 /// Explicit technology / ecosystem terms.
@@ -3486,6 +3681,10 @@ fn is_module_marker_word(word: &str) -> bool {
 /// project names like `ATLAS` are not mismatched, which favours fewer false
 /// positives over completeness).
 fn is_project_candidate(word: &str) -> bool {
+    // Command-line flags ("-D", "--release") are never project names.
+    if word.starts_with('-') {
+        return false;
+    }
     if word.len() < 2 || word.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
@@ -3508,8 +3707,11 @@ fn is_project_candidate(word: &str) -> bool {
         .chars()
         .skip(1)
         .any(|c| c.is_uppercase() && c.is_alphabetic());
-    let decorated = word.contains('-') || word.contains('_') || word.contains('.');
-    first_upper || internal_upper || decorated
+    // Only capitalization signals a proper noun. Mere decoration
+    // ("false-block", "my_project", "-D") must not: technical compounds are
+    // ordinary domain terms, and per the documented invariant their absence
+    // from the repository is never an explicit mismatch.
+    first_upper || internal_upper
 }
 
 /// True for issue/task identifiers: `#42`, `PROJ-123`, `P10.5.1`, `10.5.1`.
@@ -3548,9 +3750,16 @@ fn is_issue_identifier(word: &str) -> bool {
 }
 
 /// True for path references: contains a `/`, or a dotted file extension.
+///
+/// Slash tokens whose segments are all numeric (`23/23`, `1/2`) are scores
+/// or fractions, not paths, and never become path entities.
 fn is_path_reference(word: &str) -> bool {
     if word.contains('/') {
-        return true;
+        // Purely numeric slash tokens ("23/23") are scores/fractions.
+        let all_numeric_segments = word
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()));
+        return !all_numeric_segments;
     }
     // A dotted extension: `name.ext` where `ext` is 1..=6 alphanumeric chars
     // and not all digits (so `P10.5.1` is not a path).

@@ -301,3 +301,92 @@ fn mismatch_requires_explicit_contradictory_identity() {
         &assessment.negative_evidence
     ));
 }
+
+#[test]
+fn cli_flag_tokens_are_never_project_entities() {
+    // "clippy -D warnings" is a lint invocation, not a foreign project name.
+    // Regression: "-D" used to become a Project entity, producing a strong
+    // ExplicitProjectMismatch that flipped honest claims to AMBIGUOUS.
+    let assessment = assess(
+        "All CodeBro tests pass: cargo fmt, cargo check, and clippy -D warnings exit 0.",
+        &codebro_project(),
+    );
+    assert_eq!(assessment.status, ContextStatus::Matched);
+    assert!(assessment.primary_mismatch().is_none());
+}
+
+#[test]
+fn lowercase_hyphenated_compounds_are_never_foreign_projects() {
+    // Regression: "false-block" / "scope-quantifier" used to become Project
+    // entities via the decorated heuristic, so an honest summary containing
+    // ordinary technical compounds was blocked as MISMATCH. Decoration is not
+    // a proper-noun signal; absence of a domain term is never a mismatch.
+    let assessment = assess(
+        "Fixed the false-block bugs (flag-token detection, scope-quantifier targets) in CodeBro.",
+        &codebro_project(),
+    );
+    assert_eq!(assessment.status, ContextStatus::Matched);
+    assert!(!has_kind(
+        ContextEvidenceKind::ExplicitProjectMismatch,
+        &assessment.negative_evidence
+    ));
+}
+
+#[test]
+fn sentence_initial_past_tense_report_verbs_are_not_projects() {
+    // Regression: a completion claim beginning with a capitalized past-tense
+    // verb ("Replaced ...") used to become a Project entity named "Replaced",
+    // producing a strong ExplicitProjectMismatch and a false
+    // MISMATCH_CONTEXT_BLOCK on the real repository.
+    let assessment = assess(
+        "Replaced the gate plugin's keyword-based claim extraction with an assertion predicate.",
+        &codebro_project(),
+    );
+    assert_ne!(assessment.status, ContextStatus::Mismatch);
+    assert!(!has_kind(
+        ContextEvidenceKind::ExplicitProjectMismatch,
+        &assessment.negative_evidence
+    ));
+    assert!(mismatch_of(&assessment).is_none());
+
+    // Same rule mid-report, sentence-initial after a period.
+    let assessment = assess(
+        "Docs updated. Synced both plugin locations.",
+        &codebro_project(),
+    );
+    assert_ne!(assessment.status, ContextStatus::Mismatch);
+}
+
+#[test]
+fn past_tense_verb_prefix_preserves_atlas_mismatch() {
+    // Guard against over-masking: filtering the leading past-tense verb must
+    // not hide the foreign project that follows it.
+    let assessment = assess("Implemented Atlas P10.5.1 Fact Store.", &codebro_project());
+    assert_eq!(assessment.status, ContextStatus::Mismatch);
+    assert_eq!(mismatch_of(&assessment).as_deref(), Some("Atlas"));
+}
+
+#[test]
+fn numeric_slash_scores_are_not_path_references() {
+    // Regression: "vitest 23/23 passed" produced an absent Path entity for
+    // "23/23" (a test count), adding spurious negative evidence.
+    let task = griller_context::normalize_deterministic("vitest 23/23 passed.");
+    assert_eq!(
+        task.entities_of(griller_context::EntityKind::Path).count(),
+        0
+    );
+
+    let assessment = assess("vitest 23/23 passed.", &codebro_project());
+    assert!(!has_kind(
+        ContextEvidenceKind::ReferencedEntityAbsent,
+        &assessment.negative_evidence
+    ));
+    assert_ne!(assessment.status, ContextStatus::Mismatch);
+
+    // Real paths still resolve as path references.
+    let task = griller_context::normalize_deterministic("updated docs/gate.md");
+    assert_eq!(
+        task.entities_of(griller_context::EntityKind::Path).count(),
+        1
+    );
+}
