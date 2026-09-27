@@ -400,3 +400,286 @@ fn node_repository_derives_node_test_command() {
         "node repo must not be a context mismatch, got {context_status}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Dirty working tree refusal (M2: a dirty tree cannot be verified)
+// ---------------------------------------------------------------------------
+//
+// Replay executes in a worktree created from `HEAD`. Uncommitted edits are not
+// in that worktree, so a passing replay describes the committed state and never
+// the agent's working tree. Policy: DIRTY REPOSITORY -> UNVERIFIABLE.
+
+/// Break the fixture's passing test without touching anything else.
+fn break_the_working_tree(repo: &std::path::Path) {
+    let path = repo.join("src/greet.rs");
+    let mut body = std::fs::read_to_string(&path).expect("read greet.rs");
+    body.push_str(
+        "\n#[cfg(test)]\nmod uncommitted_breakage {\n    #[test]\n    fn introduced_after_head_and_never_committed() {\n        assert!(false, \"this test only exists in the working tree\");\n    }\n}\n",
+    );
+    std::fs::write(&path, body).expect("write greet.rs");
+}
+
+/// Make the fixture's intentionally failing test pass, uncommitted.
+fn fix_the_working_tree(repo: &std::path::Path) {
+    let path = repo.join("src/lib.rs");
+    let body = std::fs::read_to_string(&path).expect("read lib.rs");
+    let fixed = body.replace(
+        "assert!(false, \"this test intentionally fails\");",
+        "assert!(true, \"fixed in the working tree, never committed\");",
+    );
+    assert_ne!(body, fixed, "fixture must contain the failing assertion");
+    std::fs::write(&path, fixed).expect("write lib.rs");
+}
+
+fn final_status(v: &serde_json::Value) -> String {
+    v["assessment"]["final"]["status"]
+        .as_str()
+        .expect("final status")
+        .to_string()
+}
+
+fn assert_refused_as_unverifiable(v: &serde_json::Value, what: &str) {
+    // The core invariant: a dirty repository can never reach VERIFIED.
+    assert_ne!(
+        final_status(v),
+        "verified",
+        "{what}: a dirty repository must never be VERIFIED"
+    );
+    assert_eq!(
+        final_status(v),
+        "unverifiable",
+        "{what}: dirty repository must be UNVERIFIABLE"
+    );
+    // Completion + Unverifiable is BLOCK at High severity, via the existing
+    // policy table. No new status, verdict or reason vocabulary was added.
+    assert_eq!(v["verdict"], "block", "{what}: verdict must block");
+    assert_eq!(
+        v["reason_code"], "UNVERIFIABLE_COMPLETION_BLOCK",
+        "{what}: reason code"
+    );
+    // The refusal must happen before replay can produce supporting evidence.
+    assert!(
+        v["attacks"]["planned"].as_array().unwrap().is_empty(),
+        "{what}: no attack may be planned for a dirty repository"
+    );
+    assert!(
+        v["attacks"]["results"].as_array().unwrap().is_empty(),
+        "{what}: no attack may run against HEAD for a dirty repository"
+    );
+    assert_eq!(v["timing"]["attacks_ms"], 0, "{what}: no attack time");
+}
+
+#[test]
+fn unstaged_modification_makes_verification_unverifiable() {
+    let repo = fixture_git_repo("greet_rust");
+    let clean = run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+        .expect("clean baseline check");
+    assert_eq!(
+        serialize(&clean)["assessment"]["final"]["status"],
+        "verified"
+    );
+
+    break_the_working_tree(repo.path());
+
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    assert_eq!(v["repository"]["dirty"], true, "snapshot must report dirty");
+    assert_eq!(
+        v["repository"]["unstaged_changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_refused_as_unverifiable(&v, "unstaged modification");
+}
+
+#[test]
+fn staged_modification_makes_verification_unverifiable() {
+    let repo = fixture_git_repo("greet_rust");
+    break_the_working_tree(repo.path());
+    common::git(repo.path(), &["add", "-A"]);
+
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    assert_eq!(v["repository"]["dirty"], true, "snapshot must report dirty");
+    assert_eq!(
+        v["repository"]["staged_changes"].as_array().unwrap().len(),
+        1
+    );
+    assert_refused_as_unverifiable(&v, "staged modification");
+}
+
+#[test]
+fn untracked_file_makes_verification_unverifiable() {
+    let repo = fixture_git_repo("greet_rust");
+    std::fs::write(repo.path().join("src/never_committed.rs"), "// new\n")
+        .expect("write untracked file");
+
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    // Untracked files are part of the existing `dirty` semantics.
+    assert_eq!(v["repository"]["dirty"], true, "untracked counts as dirty");
+    assert_eq!(
+        v["repository"]["untracked_files"].as_array().unwrap().len(),
+        1
+    );
+    assert_refused_as_unverifiable(&v, "untracked file");
+}
+
+/// SECURITY REGRESSION — the exact fail-open closed in Phase 1.3.
+///
+/// `HEAD` passes its tests. The agent breaks them in the working tree and then
+/// claims "All tests pass." Replay inspects `HEAD`, so it *would* produce
+/// Direct supporting evidence. Before the refusal existed, that evidence
+/// yielded `VERIFIED` for code the engine never looked at.
+#[test]
+fn uncommitted_breakage_cannot_be_verified_from_a_passing_head() {
+    let repo = fixture_git_repo("greet_rust");
+
+    // Precondition: a clean HEAD really does pass, so a HEAD-based replay
+    // would generate supporting evidence for this claim.
+    let clean = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("clean baseline check"),
+    );
+    assert_eq!(clean["verdict"], "pass");
+    assert_eq!(clean["assessment"]["final"]["status"], "verified");
+    let replay = clean["attacks"]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "replay")
+        .expect("replay must run on a clean tree");
+    assert_eq!(replay["outcome"], "no_objection");
+
+    // The agent breaks the tests, uncommitted, and claims success anyway.
+    break_the_working_tree(repo.path());
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    assert_refused_as_unverifiable(&v, "uncommitted breakage over passing HEAD");
+}
+
+/// SECURITY REGRESSION — the inverse shape: `HEAD` fails, the working tree
+/// fixes it. The claim is true of the working tree and false of `HEAD`; the
+/// gate must not certify either, because it never inspected the working tree.
+#[test]
+fn uncommitted_fix_for_a_failing_head_is_not_verified() {
+    let repo = fixture_git_repo("lying_rust");
+    fix_the_working_tree(repo.path());
+
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    assert_refused_as_unverifiable(&v, "uncommitted fix over failing HEAD");
+}
+
+#[test]
+fn dirty_refusal_preserves_the_repository_state_in_the_report() {
+    let repo = fixture_git_repo("greet_rust");
+    break_the_working_tree(repo.path());
+    let head = common::git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+
+    let r = &v["repository"];
+    assert_eq!(r["path"], repo.path().to_str().unwrap());
+    assert_eq!(
+        r["head"],
+        head.as_str(),
+        "report must name the verified commit"
+    );
+    assert_eq!(r["branch"], "main");
+    assert_eq!(r["dirty"], true);
+    assert_eq!(r["staged_changes"].as_array().unwrap().len(), 0);
+    assert_eq!(r["unstaged_changes"].as_array().unwrap().len(), 1);
+    assert_eq!(r["untracked_files"].as_array().unwrap().len(), 0);
+
+    // The reason must state that replay would have inspected HEAD.
+    let reason = r["refusal_reason"].as_str().expect("refusal_reason");
+    assert!(reason.contains("dirty"), "reason: {reason}");
+    assert!(reason.contains("HEAD"), "reason: {reason}");
+    assert!(
+        reason.contains("uncommitted working tree"),
+        "reason must name the working tree: {reason}"
+    );
+    // Paths only — never file contents.
+    assert!(
+        !reason.contains("fn ") && !reason.contains("assert!"),
+        "refusal must not leak file contents: {reason}"
+    );
+
+    // The same explanation is carried into the assessment and the record
+    // surface, so a reader of the decision record sees why nothing ran.
+    let note = &v["assessment"]["final"]["insufficient"][0];
+    assert_eq!(note["relationship"], "unverifiable");
+    assert!(note["reason"].as_str().unwrap().contains("HEAD"));
+    assert!(v["self_grill"]["ran"] == false);
+    assert!(v["self_grill"]["skipped_reason"]
+        .as_str()
+        .unwrap()
+        .contains("dirty"));
+}
+
+#[test]
+fn clean_repository_verification_is_unaffected() {
+    // Both a direct-evidence claim and a replay-backed claim must still work.
+    let repo = fixture_git_repo("greet_rust");
+
+    let replayed = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+    assert_eq!(replayed["verdict"], "pass");
+    assert_eq!(replayed["assessment"]["final"]["status"], "verified");
+    assert_eq!(replayed["repository"]["dirty"], false);
+    assert_eq!(
+        replayed["repository"]["refusal_reason"],
+        serde_json::Value::Null
+    );
+
+    let direct = serialize(
+        &run_completion_check(&request(
+            repo.path().to_str().unwrap(),
+            "The file src/greet.rs exists.",
+        ))
+        .expect("completion check"),
+    );
+    assert_eq!(direct["verdict"], "pass");
+    assert_eq!(direct["assessment"]["final"]["status"], "verified");
+    assert_eq!(direct["repository"]["dirty"], false);
+}
+
+#[test]
+fn contradicting_clean_evidence_still_blocks_a_dirty_claim() {
+    // A dirty tree is refused, but a lying agent on a clean tree must still be
+    // caught by replay: the refusal must not have weakened the clean path.
+    let repo = fixture_git_repo("lying_rust");
+    let v = serialize(
+        &run_completion_check(&request(repo.path().to_str().unwrap(), "All tests pass."))
+            .expect("completion check"),
+    );
+    assert_eq!(v["repository"]["dirty"], false);
+    assert!(
+        v["verdict"].as_str().unwrap() != "pass",
+        "lying agent must not pass"
+    );
+    assert_ne!(v["assessment"]["final"]["status"], "verified");
+}

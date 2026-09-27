@@ -30,12 +30,13 @@ use std::time::Instant;
 use griller_adjudicate::assess::Adjudicator;
 use griller_adjudicate::attack_coverage::AttackCoverage as M2AttackCoverage;
 use griller_adjudicate::claim::{ClaimInput, ClaimKind, ClaimSource};
-use griller_adjudicate::status::EpistemicStatus;
+use griller_adjudicate::relationship::EvidenceRelationship;
+use griller_adjudicate::status::{EpistemicStatus, InsufficiencyNote, Reason};
 use griller_context::assess::ContextAssessor;
 use griller_context::status::ContextStatus;
 use griller_core::attack::{AttackKind, AttackOutcome, AttackResult, AttackSpec};
 use griller_core::command::{CommandSpec, ReplayLock, REPLAY_TIMEOUT_MS};
-use griller_core::evidence::Evidence;
+use griller_core::evidence::{Evidence, EvidenceContent, EvidenceId};
 use griller_policy::context::ContextFinding;
 use griller_policy::decision::RequiredAction;
 use griller_policy::policy::{Policy, PolicyContext, PolicyTable};
@@ -157,6 +158,9 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
                 total_ms: started.elapsed().as_millis() as u64,
                 evidence_count: 0,
             },
+            // No evidence was collected: the context mismatch blocked before
+            // the repository could be inspected.
+            repository: None,
         };
         return Ok(report);
     }
@@ -227,6 +231,122 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
         }
     };
     let mut t_adjudication = adjudication_start.elapsed().as_millis() as u64;
+
+    // -----------------------------------------------------------------------
+    // Dirty working tree: refuse before any attack can produce support.
+    //
+    // Replay executes in a worktree created with `git worktree add --detach`
+    // and no commit-ish, so it inspects `HEAD`. The user's uncommitted edits
+    // are not in that worktree. Adjudicating a passing replay as support
+    // would therefore let `VERIFIED` describe code the engine never inspected.
+    //
+    // The dirty state is already collected from the user's tree by
+    // `SnapshotCollector` (see the collector loop above). Policy: a dirty
+    // repository is UNVERIFIABLE. We do not carry the delta into the worktree
+    // and we do not synthesise a working tree.
+    // -----------------------------------------------------------------------
+    let snapshot = collected_snapshot(&base_evidence);
+    let repository = snapshot.and_then(|e| match &e.content {
+        EvidenceContent::RepositorySnapshot(s) => Some(CompletionRepositorySection {
+            path: req.repo.display().to_string(),
+            head: s.snapshot.head.clone(),
+            branch: s.snapshot.branch.clone(),
+            dirty: s.snapshot.dirty,
+            staged_changes: s.snapshot.staged_changes.clone(),
+            unstaged_changes: s.snapshot.unstaged_changes.clone(),
+            untracked_files: s.snapshot.untracked_files.clone(),
+            refusal_reason: None,
+        }),
+        _ => None,
+    });
+
+    if let Some(dirty_state) = repository.as_ref().filter(|r| r.dirty) {
+        let refusal = dirty_tree_refusal(dirty_state);
+        let snapshot_id = snapshot
+            .map(|e| e.id.clone())
+            .unwrap_or_else(|| EvidenceId::from_content_hash("dirty-tree"));
+
+        // Same shape `status.rs` produces for UNVERIFIABLE: no support, no
+        // contradiction, one insufficiency note naming the blocking evidence.
+        // The initial assessment is retained for the record first: it shows
+        // what base evidence alone would have concluded, so a refusal that
+        // overrides an implied "verified" is auditable.
+        let initial_for_report = initial_assessment.clone();
+        let final_assessment = griller_adjudicate::assess::ClaimAssessment {
+            status: EpistemicStatus::Unverifiable,
+            reasons: vec![Reason::RelevantExecutionUnavailable(snapshot_id.clone())],
+            supporting_evidence: Vec::new(),
+            contradicting_evidence: Vec::new(),
+            insufficient: vec![InsufficiencyNote {
+                evidence_id: snapshot_id,
+                relationship: EvidenceRelationship::Unverifiable,
+                reason: refusal.clone(),
+            }],
+            ..initial_assessment
+        };
+
+        let severity = severity_for(&final_assessment.status);
+        let policy_context = PolicyContext::new(severity, SeveritySource::Derived);
+        let decision = PolicyTable.decide(&final_assessment, &policy_context);
+
+        let mut refused = dirty_state.clone();
+        refused.refusal_reason = Some(refusal.clone());
+
+        return Ok(CompletionReport {
+            schema_version: SCHEMA_VERSION.to_string(),
+            verdict: decision.verdict,
+            reason_code: decision.reason_code.clone(),
+            required_action: decision.required_action,
+            required_action_message: decision.required_action_message.clone(),
+            request: CompletionRequestInfo {
+                repo: req.repo.display().to_string(),
+                claim: req.claim.clone(),
+                claim_kind: req.claim_kind,
+            },
+            context: CompletionContextSection {
+                status: context_assessment.status,
+                verdict: context_finding.verdict,
+                reason: context_finding.reason.clone(),
+                required_action: context_finding.required_action,
+                required_action_message: context_finding.required_action_message.clone(),
+                positive_evidence: truncate_evidence(&context_assessment.positive_evidence),
+                negative_evidence: truncate_evidence(&context_assessment.negative_evidence),
+            },
+            assessment: CompletionAssessmentSection {
+                initial: Some(initial_for_report),
+                final_assessment: Some(final_assessment),
+            },
+            attacks: CompletionAttackSection {
+                planned: Vec::new(),
+                results: Vec::new(),
+                coverage: Some(build_coverage(&[], &[], &[])),
+                rejected: vec![format!("dirty working tree: {refusal}")],
+            },
+            self_grill: CompletionSelfGrillSection {
+                ran: false,
+                refuted: false,
+                message: None,
+                skipped_reason: Some(
+                    "repository working tree was dirty; verification was refused before any \
+                     attack ran, so there was no M2 decision for the self-grill to audit"
+                        .to_string(),
+                ),
+                original: None,
+                result: None,
+            },
+            timing: TimingSection {
+                context_ms: t_context,
+                identity_ms: t_identity,
+                evidence_ms: t_evidence,
+                adjudication_ms: t_adjudication,
+                attacks_ms: 0,
+                self_grill_ms: 0,
+                total_ms: started.elapsed().as_millis() as u64,
+                evidence_count: base_evidence.len(),
+            },
+            repository: Some(refused),
+        });
+    }
 
     // -----------------------------------------------------------------------
     // M5: plan applicable safe attacks, then execute them
@@ -418,6 +538,7 @@ pub fn run_completion_check(req: &CompletionRequest) -> Result<CompletionReport,
             total_ms: started.elapsed().as_millis() as u64,
             evidence_count: combined_evidence.len(),
         },
+        repository,
     })
 }
 
@@ -639,6 +760,37 @@ pub struct CompletionReport {
     pub self_grill: CompletionSelfGrillSection,
     /// Per-stage timing diagnostics (descriptive, not confidence).
     pub timing: TimingSection,
+    /// The repository state this verdict describes.
+    ///
+    /// `Some` whenever the repository could be inspected as a git repository.
+    /// `dirty = true` means the working tree differed from `HEAD`; in that case
+    /// verification is refused and `refusal_reason` explains why, because
+    /// replay would have inspected `HEAD` rather than the working tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<CompletionRepositorySection>,
+}
+
+/// The base + working state of the repository a verdict was produced for.
+///
+/// Paths and porcelain lines only — never file contents, never secrets.
+#[derive(Debug, Serialize, Clone)]
+pub struct CompletionRepositorySection {
+    /// The repository path the request was made against.
+    pub path: String,
+    /// `HEAD` at verification time.
+    pub head: Option<String>,
+    /// Branch name when not detached.
+    pub branch: Option<String>,
+    /// True when staged, unstaged or untracked changes existed.
+    pub dirty: bool,
+    /// Porcelain lines for staged changes.
+    pub staged_changes: Vec<String>,
+    /// Porcelain lines for unstaged changes.
+    pub unstaged_changes: Vec<String>,
+    /// Untracked file paths.
+    pub untracked_files: Vec<String>,
+    /// Why verification was refused; `Some` only when `dirty` is true.
+    pub refusal_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -690,6 +842,36 @@ pub struct CompletionSelfGrillSection {
     pub skipped_reason: Option<String>,
     pub original: Option<griller_self_grill::OriginalDecision>,
     pub result: Option<griller_self_grill::SelfGrillResult>,
+}
+
+/// The repository-snapshot evidence collected from the user's working tree,
+/// when the target is a git repository.
+///
+/// `SnapshotCollector` reads `req.repo` — the user's tree, not the isolated
+/// replay worktree — so this is the only place the pipeline observes whether
+/// the claimed state is actually the state that would be verified.
+fn collected_snapshot(evidence: &[Evidence]) -> Option<&Evidence> {
+    evidence
+        .iter()
+        .find(|e| matches!(e.content, EvidenceContent::RepositorySnapshot(_)))
+}
+
+/// Explain why a dirty working tree cannot be verified.
+///
+/// Deterministic, contains no claim text, no file contents and no secrets: only
+/// counts and the `HEAD` identifier already present in the snapshot.
+fn dirty_tree_refusal(state: &CompletionRepositorySection) -> String {
+    let head = state.head.as_deref().unwrap_or("(no commits)");
+    format!(
+        "Repository working tree is dirty at {head} ({} staged, {} unstaged, {} untracked). \
+         Replay executes in an isolated worktree checked out from HEAD, so it would verify the \
+         committed state rather than the agent's uncommitted working tree. Verification refused \
+         to prevent a VERIFIED result for code that was not inspected; commit or stash the \
+         working tree changes and re-run.",
+        state.staged_changes.len(),
+        state.unstaged_changes.len(),
+        state.untracked_files.len(),
+    )
 }
 
 /// Per-stage wall-clock timing in milliseconds.

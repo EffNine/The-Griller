@@ -88,6 +88,19 @@ pub fn summarize_report(report: &Value) -> ReportSummary {
             });
         }
     }
+    // Dirty working tree: the record must explain why nothing was verified,
+    // because replay would have inspected `HEAD` rather than the working tree.
+    if report.pointer("/repository/dirty").and_then(Value::as_bool) == Some(true) {
+        let detail = string_at(report, "/repository/refusal_reason")
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| {
+                "working tree was dirty; replay would have inspected HEAD".to_string()
+            });
+        findings.push(Finding {
+            key: "repository_dirty".into(),
+            detail,
+        });
+    }
     if let Some(ran) = report.pointer("/self_grill/ran").and_then(Value::as_bool) {
         if ran {
             if let Some(refuted) = report
