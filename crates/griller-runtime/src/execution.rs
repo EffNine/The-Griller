@@ -10,12 +10,19 @@
 //! * A `NetworkPolicy::Disabled` spec gets `GIT_TERMINAL_PROMPT=0` so tools
 //!   fail closed instead of blocking on interactive prompts. Kernel-level
 //!   network isolation is deferred (see `docs/execution.md`).
-//! * Timeouts are enforced by polling and killing the child.
+//! * Timeouts are enforced by polling, then terminating the whole **process
+//!   group** (see [`terminate_process_group`]) so that descendants spawned by the
+//!   direct child — `rustc` under `cargo test` — cannot outlive the timeout and
+//!   perturb a later verification. On non-Unix the group signal is unavailable and
+//!   only the direct child is terminated.
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use griller_core::command::{
     CommandSpec, Enforcement, EnvironmentPolicy, ExecutionStatus, NetworkPolicy,
@@ -133,6 +140,76 @@ impl ExecutionResult {
 /// from the [`CommandSpec`]. There is no shell and no ambient state.
 pub struct ExecutionBackend;
 
+/// Put the child into its own process group so a timeout can tear down the
+/// whole tree, not just the direct child.
+///
+/// On Unix this issues `setpgid(0, 0)` in the child between `fork` and `exec`, so
+/// the child becomes a group leader whose PGID equals its own PID.
+/// [`CommandExt::process_group`] is used rather than `Command::pre_exec` because it
+/// is safe and cannot be used to smuggle in non-signal-safe code.
+///
+/// On non-Unix this is a no-op and teardown falls back to the direct child.
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+/// Terminate the child and every process it spawned.
+///
+/// [`std::process::Child::kill`] signals only the direct child, so a `cargo test`
+/// replay leaves `rustc` and linker grandchildren running: they get reparented to
+/// init, can keep writing into a worktree this process is about to remove, and can
+/// perturb a *later* verification. Because the evidence model is content-addressed,
+/// that is a reproducibility defect, not merely a resource leak.
+///
+/// On Unix the whole group is signalled with `SIGKILL`, matching the previous
+/// direct-child semantics: no grace period, no cleanup hook, no new exit path. The
+/// direct child is additionally killed as a fallback so a spawn where the group did
+/// not take effect still cannot leave the child running. Reaping is unchanged — the
+/// caller still waits on the direct child exactly once.
+///
+/// Termination is best-effort and **never** changes the reported status: a timeout
+/// stays [`ExecutionStatus::TimedOut`] with `exit_code: None` either way, so this
+/// cannot turn a timeout into a success.
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "killpg(2) has no safe std equivalent; confined to this function. See crate-level note in lib.rs and PHASE_2_BASELINE.md §6"
+)]
+fn terminate_process_group(child: &mut Child) {
+    let pid = child.id();
+    if pid != 0 {
+        // SAFETY: `killpg` is a direct async-signal-safe syscall wrapper taking a
+        // process-group id and a signal number, with no preconditions beyond a
+        // valid pgid; it cannot dereference memory or allocate. The child was
+        // placed in its own group by `isolate_process_group` before `exec`, so its
+        // PGID equals its PID and the id is a live group leader at this point
+        // (the caller only reaches here while the child is still running). A group
+        // that has already exited returns ESRCH, which is deliberately ignored:
+        // the fallback below then reaps whatever remains, and neither outcome can
+        // alter the TimedOut status the caller reports.
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    terminate_direct_child(child);
+}
+
+/// Non-Unix fallback: only the direct child can be signalled with a safe API.
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut Child) {
+    terminate_direct_child(child);
+}
+
+/// Signal the direct child. Errors are ignored because the child may already be
+/// dead, which is not an error condition here.
+fn terminate_direct_child(child: &mut Child) {
+    let _ = child.kill();
+}
+
 impl ExecutionBackend {
     /// Execute the given command against the environment source.
     ///
@@ -160,6 +237,7 @@ impl ExecutionBackend {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        isolate_process_group(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -186,7 +264,7 @@ impl ExecutionBackend {
         loop {
             if let Some(deadline) = deadline {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
+                    terminate_process_group(&mut child);
                     timed_out = true;
                     break;
                 }

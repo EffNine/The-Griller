@@ -143,7 +143,7 @@ not be readable as "the claim is false."
 | claim/task text | ≤ 10 000 chars |
 | repo path | ≤ 2 000 chars |
 | attack kinds per request | ≤ 20 |
-| per-attack timeout | default 30 s, capped 120 s |
+| per-attack timeout | default 30 s, replay budget 600 s, capped 600 s (`MAX_TIMEOUT_MS`) |
 | evidence snippets in responses | ≤ 10 |
 | report size | < 256 KiB in practice |
 

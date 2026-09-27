@@ -476,6 +476,37 @@ mod tests {
         assert_eq!(cmd.args, ["test", "./..."]);
     }
 
+    /// A derived replay command must carry the canonical replay budget, not a
+    /// restated literal. The gate's outer envelope is derived from this same
+    /// constant, so this guards the inner half of the Phase 2 timeout fix: if the
+    /// two ever diverge again, a replay could be given less time than the envelope
+    /// allows and abort for no reason.
+    #[test]
+    fn derived_replay_command_carries_the_canonical_replay_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\n",
+        )
+        .unwrap();
+
+        for claim in ["All tests pass.", "The build succeeds.", "Tests are green."] {
+            let cmd = derive_replay_command(claim, dir.path())
+                .unwrap_or_else(|| panic!("expected a replay command for {claim:?}"));
+            assert_eq!(
+                cmd.timeout_ms,
+                griller_core::command::REPLAY_TIMEOUT_MS,
+                "derived replay for {claim:?} must use REPLAY_TIMEOUT_MS"
+            );
+            assert_eq!(cmd.timeout_ms, 600_000);
+            assert_ne!(
+                cmd.timeout_ms,
+                griller_core::command::DEFAULT_TIMEOUT_MS,
+                "a derived replay must not fall back to the 30s command default"
+            );
+        }
+    }
+
     #[test]
     fn unknown_ecosystem_returns_none() {
         let dir = tempfile::tempdir().unwrap();

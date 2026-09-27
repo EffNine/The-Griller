@@ -211,3 +211,29 @@ fn command_output_evidence_outcome_distinguishes_failure_kinds() {
     assert_eq!(content.outcome(), CommandOutcome::Failed);
     assert_eq!(content.exit_code, Some(1));
 }
+
+/// `Stdio::null()` must give a reading command immediate EOF rather than a
+/// blocking stdin. Without this, a command that reads stdin inherits the test
+/// runner's stdin and can hang forever — and, in the gate, would stall a
+/// verification rather than fail it.
+#[test]
+fn stdin_is_closed_so_a_reading_command_gets_eof() {
+    let spec = spec_for(
+        "sh",
+        &["-c", "if read x; then echo GOT_INPUT; else echo EOF; fi"],
+    )
+    .with_timeout(10_000);
+    let result = ExecutionBackend::execute(&spec, &echo_env_source()).unwrap();
+
+    assert_eq!(result.status, ExecutionStatus::Completed);
+    assert!(
+        !result.timed_out,
+        "a command reading stdin must not time out"
+    );
+    assert_eq!(result.exit_code, Some(0));
+    assert_eq!(result.stdout_lossy().trim(), "EOF");
+    assert!(
+        !result.stdout_lossy().contains("GOT_INPUT"),
+        "the child must not be able to read the parent's stdin"
+    );
+}

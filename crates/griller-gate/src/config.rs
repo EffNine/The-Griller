@@ -6,8 +6,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 
-/// Default per-request timeout (120s) applied to the MCP round-trips.
-pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// Default per-request timeout applied to the MCP round-trips.
+///
+/// This is the **outer envelope** for a whole `check_completion` call, so it must not
+/// be smaller than the inner per-attack replay budget it contains. It is therefore
+/// derived from the single canonical constant rather than restated as its own
+/// literal: a replay that legitimately needs the full budget must not be aborted by
+/// the envelope while it is still legitimately running.
+///
+/// Deriving rather than duplicating means the two cannot drift apart again, which is
+/// exactly how the previous hardcoded `120_000` came to sit below the 600 s replay
+/// budget. See `PHASE_2_BASELINE.md` §2.
+pub const DEFAULT_TIMEOUT_MS: u64 = griller_core::command::REPLAY_TIMEOUT_MS;
+
+/// The gate's outer envelope may not be shorter than the canonical replay budget it
+/// wraps. Asserted at compile time, so a future edit that reintroduces a smaller
+/// literal fails the build instead of silently reintroducing the defect.
+const _: () = assert!(DEFAULT_TIMEOUT_MS >= griller_core::command::REPLAY_TIMEOUT_MS);
 
 /// The server properties the gate requires before invoking any tool.
 ///

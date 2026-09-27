@@ -8,6 +8,11 @@ description = "Execution backend, collectors, worktree isolation and evidence st
 [dependencies]
 griller-core = { workspace = true }
 griller-context = { workspace = true }
+# POSIX process-group teardown (`killpg`) for timeout cleanup. Declared
+# unconditionally to keep the manifest simple; every use is behind `cfg(unix)`.
+# Already present in the dependency graph transitively (ring, rustix, mio, tokio),
+# so this adds no new download and no new build cost. See PHASE_2_BASELINE.md §6.
+libc = "0.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

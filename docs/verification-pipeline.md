@@ -24,7 +24,7 @@ flowchart LR
 `timeout` (ms).
 
 **Process:** boundary validation — non-empty bounded text (≤ 10 000 chars),
-existing repository path (≤ 2 000 chars), timeout capped at 120 s.
+existing repository path (≤ 2 000 chars), timeout capped at 600 s.
 
 **Output:** a validated `CompletionRequest`, or a structured error
 (`invalid_request`, `repository_not_found`) that is never a verdict.

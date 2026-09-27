@@ -20,7 +20,7 @@ from what is **not**, because the difference is the entire security story.
 | **Worktree isolation** | Verification commands run in a disposable `git worktree` of the committed state; the user's working tree is never mutated; cleanup runs on success and failure (tested). |
 | **Path containment** | File collection verifies the resolved path stays inside the repository root (`..` escapes rejected). |
 | **Best-effort secret redaction** | Obvious credential patterns in stdout/stderr are replaced with `[REDACTED-<category>]` before entering evidence; the report records counts/categories only (tested). Not a DLP system. |
-| **Bounded MCP inputs** | Text ≤ 10 000 chars, repo path ≤ 2 000 chars, ≤ 20 attack kinds, timeout capped at 120 s. The Griller is a verification layer, not a data sink. |
+| **Bounded MCP inputs** | Text ≤ 10 000 chars, repo path ≤ 2 000 chars, ≤ 20 attack kinds, timeout capped at 600 s. The Griller is a verification layer, not a data sink. |
 | **Bounded outputs** | Evidence snippets ≤ 10 per response; reports stay < 256 KiB in practice. |
 | **Prompt injection treated as untrusted data** | Repository content and command output never become executable instructions or policy inputs (tested against injection text, including after redaction). |
 | **Immutable, hash-addressed evidence** | Evidence identity is `BLAKE3(canonical content)`; the environment fingerprint and enforcement record are part of provenance, never fake guarantees. |

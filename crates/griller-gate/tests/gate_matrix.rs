@@ -409,3 +409,39 @@ fn assert_fixture_is_git(repo: &Path) {
         .expect("git available");
     assert!(status.status.success(), "fixture must be a git repo");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2: timeout invariant
+// ---------------------------------------------------------------------------
+
+/// The gate's outer MCP envelope must never be shorter than the inner per-attack
+/// replay budget it contains.
+///
+/// This is the regression guard for the defect found in Phase 2: the gate default
+/// was a hardcoded `120_000` while the canonical replay budget is `600_000`, so a
+/// replay that legitimately needed more than two minutes was aborted by the
+/// envelope at 120 s. The constant is now *derived* from
+/// `griller_core::command::REPLAY_TIMEOUT_MS`, and this test fails if anyone
+/// reintroduces an independent literal.
+#[test]
+fn gate_default_timeout_is_not_shorter_than_the_replay_budget() {
+    assert_eq!(
+        griller_gate::DEFAULT_TIMEOUT_MS,
+        griller_core::command::REPLAY_TIMEOUT_MS,
+        "gate envelope must be derived from the canonical replay timeout"
+    );
+    assert_eq!(griller_gate::DEFAULT_TIMEOUT_MS, 600_000);
+}
+
+/// The default actually reaches the MCP round-trip deadline.
+#[test]
+fn gate_config_default_timeout_uses_the_derived_envelope() {
+    let cfg: GateConfig = serde_json::from_value(serde_json::json!({
+        "mcp_binary": "/usr/bin/true",
+        "state_dir": "/tmp",
+    }))
+    .expect("config with only required fields must deserialize");
+
+    assert_eq!(cfg.timeout_ms, griller_gate::DEFAULT_TIMEOUT_MS);
+    assert_eq!(cfg.timeout_ms, griller_core::command::REPLAY_TIMEOUT_MS);
+}
