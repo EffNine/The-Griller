@@ -76,8 +76,8 @@ running, NOT integrated, NOT production-ready.**
 > | 1. Commit the 16 uncommitted files | **COMPLETE** | `a360b7c` |
 > | 2. Back up `~/.local/share/griller/gate/` | **COMPLETE** — same-disk copy only; no off-host backup | Phase 1.1 |
 > | 3. Decide and document the dirty-state policy | **COMPLETE** — Option A chosen | Phase 1.3, implemented in `16c6852` |
-> | 4. Fix the gate timeout mismatch | **OPEN** | — |
-> | 5. Add process-group termination | **OPEN** | — |
+> | 4. Fix the gate timeout mismatch | **COMPLETE** | `0dcf9cd` — gate default derived from `REPLAY_TIMEOUT_MS` |
+> | 5. Add process-group termination | **COMPLETE** | `0dcf9cd` — `setpgid(0,0)` + `killpg(SIGKILL)` on Linux |
 >
 > The current engineering sequence is [NEXT_PHASE.md](NEXT_PHASE.md). The current state is
 > [CURRENT_STATE.md](CURRENT_STATE.md).

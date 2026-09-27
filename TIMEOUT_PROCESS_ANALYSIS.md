@@ -1,12 +1,18 @@
 # TIMEOUT_PROCESS_ANALYSIS.md
 
-> **Status: Phase 1 analysis (RECOVERY). Both findings remain OPEN.**
+> **Status: Phase 1 analysis (RECOVERY). Both findings were CLOSED in Phase 2.**
 >
-> Neither the timeout mismatch nor the missing process-group termination has
-> been changed. `DEFAULT_TIMEOUT_MS` is still 120 s at
-> `crates/griller-gate/src/config.rs:10` and `child.kill()` is still
-> direct-child-only at `crates/griller-runtime/src/execution.rs:189`. Scheduled
-> as [NEXT_PHASE.md](NEXT_PHASE.md) steps 1–2.
+> **SUPERSEDED by `0dcf9cd` (2026-09-28).** The analysis below is preserved as written —
+> it correctly identified both defects at recovery time. Since then:
+> `DEFAULT_TIMEOUT_MS` is derived from `griller_core::command::REPLAY_TIMEOUT_MS` (no
+> longer a 120 s literal), and timeout teardown uses `setpgid(0,0)` + `killpg(SIGKILL)`
+> instead of `child.kill()` alone.
+>
+> One finding was **more severe than this document assessed** — see
+> [PROCESS_GROUP_SEMANTICS.md](PROCESS_GROUP_SEMANTICS.md) §3: descendants surviving a
+> timeout made `execute()` block indefinitely, not merely linger.
+> Timeout semantics: [TIMEOUT_SEMANTICS.md](TIMEOUT_SEMANTICS.md). Platform boundary:
+> [PLATFORM_EXECUTION_LIMITATIONS.md](PLATFORM_EXECUTION_LIMITATIONS.md).
 
 INSPECT → EVIDENCE → PROPOSE. **No fix applied.** Both findings are pre-existing and were
 recorded as roadmap items before this recovery.

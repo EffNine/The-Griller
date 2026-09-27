@@ -25,7 +25,7 @@ The distinction is deliberate and is the substance of this document.
 |---|---|
 | Source recovered intact | 9 crates, 131 `.rs`, 32,885 lines; 6-commit history with a reachable remote; `HEAD` = `a360b7c` |
 | Reproducible from cold | 4 CI gates locally verified; 515 Rust + 24 plugin tests green |
-| Zero third-party runtime dependencies | 9 crates, 7 workspace deps, all internal or `serde`/`blake3`/`clap`/`thiserror`/`tempfile` |
+| Zero third-party runtime dependencies | 9 crates, 7 workspace deps, all internal or `serde`/`blake3`/`clap`/`thiserror`/`tempfile` — **SUPERSEDED in Phase 2**: `libc` is now a direct dependency of `griller-runtime` (already present transitively; `Cargo.lock` grew by 2 lines and no package was added). See [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md) §6 |
 | Verdict core is sound | single `Verified` assignment site requiring direct support **and** zero contradiction; every failure mode maps to `Unverifiable`/`Unsupported` |
 | Honesty discipline verified | `Enforcement::m1_none()` reports unsatisfied constraints truthfully; `health` advertises `not_enforced` ×3 and `secret_redaction: best_effort` |
 | Field-proven | 131 real adversarial verifications, 74.8% refusals, with full adjudication embedded |
@@ -129,6 +129,10 @@ architectural decisions. No numerical scores.
   both present.
 
 ### Third — the gate/replay timeout mismatch (120 s vs 600 s)
+
+> **CLOSED in Phase 2 (`0dcf9cd`).** The gate default is now derived from
+> `griller_core::command::REPLAY_TIMEOUT_MS` with a compile-time assertion. The reasoning
+> below is preserved as written. See [TIMEOUT_SEMANTICS.md](TIMEOUT_SEMANTICS.md).
 
 - **Trust impact:** **none** — availability only, and it fails closed (`unavailable`).
 - **Implementation risk:** **Low**, but it changes agent-visible latency, so the gate's

@@ -259,7 +259,79 @@ mismatch; process-group kill; silent-skip observability; 19 untracked documents.
 
 ## Phase 1.5 — Documentation and repository hygiene
 
-**Outcome: in progress — this commit.**
+**Commit:** `bfa1be0f2c810b928e176691660ae6b203039999`
 
-Documentation only. No production source change. See [COMMIT_HISTORY.md](COMMIT_HISTORY.md)
-for the commit it produced, and [NEXT_PHASE.md](NEXT_PHASE.md) for what remains.
+**Outcome: complete.**
+
+Documentation only. No production source change — proven by Git: the blob manifest of all
+173 tracked non-`.md` files was identical before and after. 25 markdown files, +4767 / −0.
+
+Reconciled the 19 recovery records (status banners, supersession markers, corrections to
+false *current-state* claims while preserving historical measurements), and created
+`CURRENT_STATE.md`, `PHASE_HISTORY.md`, `COMMIT_HISTORY.md`, `NEXT_PHASE.md`,
+`EVIDENCE_STATUS.md` and `DOCS_STRUCTURE_PROPOSAL.md`.
+
+**Unresolved at the end of this phase:** the proposed `docs/` structure was **not** applied
+— the destination was not unambiguous and three genuine ambiguities are recorded in
+`DOCS_STRUCTURE_PROPOSAL.md` §4. The push decision and the off-host backup policy question
+were both still open.
+
+---
+
+## Phase 2 — Execution timeout and process cleanup
+
+**Commit:** `0dcf9cd89c7de77ff2b22472e5a3fc94a267fb63`
+**Parent:** `bfa1be0`
+
+**Outcome: complete, not pushed.** Full record: [PHASE_2_STATE.md](PHASE_2_STATE.md).
+
+### Source changes
+
+| File | Change |
+|---|---|
+| `crates/griller-gate/src/config.rs` | `DEFAULT_TIMEOUT_MS` now **derived** from `griller_core::command::REPLAY_TIMEOUT_MS`, with a `const _` compile-time assertion |
+| `crates/griller-gate/Cargo.toml` | added `griller-core` (to make the reference legal) |
+| `crates/griller-runtime/src/execution.rs` | `isolate_process_group` (`setpgid(0,0)`) + `terminate_process_group` (`killpg(SIGKILL)`, `child.kill()` retained as fallback) |
+| `crates/griller-runtime/src/lib.rs` | `#![forbid(unsafe_code)]` → `#![deny(unsafe_code)]` |
+| `crates/griller-runtime/Cargo.toml` | added `libc` |
+| `crates/griller-mcp/src/plan.rs` | test pinning the derived replay timeout |
+| `docs/mcp.md`, `docs/security.md`, `docs/verification-pipeline.md` | corrected a "120 s cap" claim that never matched `MAX_TIMEOUT_MS` (600 s) |
+
+`status.rs`, `matcher.rs`, `provenance.rs`, `worktree.rs`, `completion.rs` and the trigger
+plugin were **not** touched.
+
+### Tests
+
+`cargo test --workspace` **532 passed / 0 failed** (523 + 9) · `npx vitest run` 24/24 ·
+fmt clean · clippy 0 warnings. Isolated container: 531 + 1 = 532, the one failure being a
+pre-existing environment-specific test in an unmodified file.
+
+### Security / trust result
+
+**No change to the trust model.** The dirty-tree boundary from Phase 1.4 is intact and all
+8 of its tests still pass. Timeout remains fail-closed (`TimedOut`, `exit_code: None`,
+non-passing) and no epistemic code was modified.
+
+**A liveness bug was closed, and it was worse than first assessed.** With `killpg`
+disabled, a surviving descendant inherited the piped `stdout`/`stderr`, so
+`wait_with_output()` blocked **indefinitely past the timeout** — a gate invocation could
+block forever. Proven by negative control: the regression test hangs (exit 124 at 45 s)
+with `killpg` removed, and passes in under 2 s with it restored.
+
+### Architectural changes accepted
+
+- **`griller-runtime` relaxed from `forbid` to `deny(unsafe_code)`**, by explicit owner
+  decision, for exactly one annotated `killpg` call. Negative control confirms any other
+  `unsafe` in the crate is still a compile error. The other 7 crates keep `forbid`.
+- **`libc` became a direct dependency**, which makes the property recorded in **Phase 1.1
+  §1** — *"Zero third-party runtime dependencies"* — **inaccurate**. It is left in place
+  and marked superseded rather than rewritten, because it was true when written. See
+  [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md) §6.
+
+### Unresolved at the end of this phase
+
+Non-Unix descendant cleanup and liveness (**PLATFORM-LIMITED**, no CI outside Ubuntu);
+descendants surviving a *successfully completing* command; outer/inner timeout margin
+(deferred as a product decision); silent-skip observability; `NO_COMPLETION_ASSERTION`
+design; `(Fact|Design, Unverifiable) => AlwaysWarn`; MCP exposure review; push decision;
+off-host evidence backup.

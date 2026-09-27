@@ -15,11 +15,11 @@ older document is a point-in-time record that has been marked as superseded.
 |---|---|
 | Path | `/home/afnan/projects/active/verification-gate` |
 | Recovered from | `/home/afnan/projects/archive/legacy/the-griller` (untouched) |
-| `HEAD` | `16c685225c2fad07a365587a3e8a5725c31d5def` |
-| `HEAD` subject | `fix(griller): refuse verification of dirty repositories` |
-| Parent | `a360b7c6487fd41f163b9d3fad13e05bac9696b0` |
+| `HEAD` | `0dcf9cd89c7de77ff2b22472e5a3fc94a267fb63` |
+| `HEAD` subject | `fix(griller): harden execution timeout cleanup` |
+| Parent | `bfa1be0f2c810b928e176691660ae6b203039999` |
 | Remote | `origin` → `https://github.com/EffNine/The-Griller.git` |
-| Commits ahead of `origin/main` | **2** (`a360b7c`, `16c6852`) — **not pushed** |
+| Commits ahead of `origin/main` | **4** (`a360b7c`, `16c6852`, `bfa1be0`, `0dcf9cd`) — **not pushed** |
 | Working tree | **clean** — 0 modified, 0 staged |
 | Untracked | **0** — the 19 recovery/review records and the 6 Phase 1.5 documents were added to version control in `8800a0b` |
 
@@ -35,15 +35,17 @@ confirmed as the intended long-term home for this work, so nothing has been push
 | Format | `cargo fmt --all -- --check` | **PASS** (exit 0) |
 | Compile | `cargo check --workspace` | **PASS** (exit 0, 0 warnings) |
 | Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** (0 warnings) |
-| Rust tests | `cargo test --workspace` | **PASS** — **523 passed, 0 failed**, 6 ignored, 35 test binaries |
+| Rust tests | `cargo test --workspace` | **PASS** — **532 passed, 0 failed**, 6 ignored, 36 test binaries |
 | Plugin tests | `npx vitest run` | **PASS** — **24 / 24** |
 | Cold build | from empty `target/` | **PASS** (verified in Phase 1; not re-run since) |
 
 **Rust test count history:** 515 at recovery → 515 after `a360b7c` (the recovered work
-added tests and the Phase 1.2 fix pinned more) → **523** after `16c6852` (+8 dirty-state
-tests).
+added tests and the Phase 1.2 fix pinned more) → 523 after `16c6852` (+8 dirty-state tests)
+→ **532** after `0dcf9cd` (+9 execution tests: 5 process-group, 1 stdin isolation, 1
+replay-timeout, 2 gate timeout invariant).
 
-**Plugin test count history:** 23 at recovery → **24** after `a360b7c`.
+**Plugin test count history:** 23 at recovery → **24** after `a360b7c`. Unchanged by
+Phase 2.
 
 > Two tracked documents still state **424** tests. Both describe the M8 field-validation
 > run and are historically accurate for that point in time, so they were left alone:
@@ -104,19 +106,50 @@ See [EVIDENCE_STATUS.md](EVIDENCE_STATUS.md).
 | Trigger fail-open: terse completion assertions (`"Done."`, `"It's ready."`) returned no claims and silently skipped | `a360b7c` | Two rules added before `return false` in `looks_like_completion_assertion`; 25 positives and 2 injections pinned by a regression table |
 | **Dirty-tree trust boundary:** replay inspected `HEAD`, so `VERIFIED` could describe uninspected code | `16c6852` | Dirty tree ⇒ `UNVERIFIABLE` before any attack runs |
 | 16 files of uncommitted recovered work at risk of loss | `a360b7c` | Committed |
+| **Gate default timeout (120 s) smaller than the replay budget it wrapped (600 s)** | `0dcf9cd` | Gate default **derived** from `griller_core::command::REPLAY_TIMEOUT_MS`, plus a `const _` compile-time assertion. See [TIMEOUT_SEMANTICS.md](TIMEOUT_SEMANTICS.md) |
+| **Timeout killed only the direct child; descendants survived** | `0dcf9cd` | `setpgid(0,0)` on spawn; `killpg(SIGKILL)` on timeout, `child.kill()` retained as fallback. See [PROCESS_GROUP_SEMANTICS.md](PROCESS_GROUP_SEMANTICS.md) |
+| **Liveness: a surviving descendant held the piped stdout/stderr open, so `wait_with_output()` blocked indefinitely past the timeout** | `0dcf9cd` | Same fix. Proven by negative control: with `killpg` removed the regression test hangs (exit 124 at 45 s on host, and in an isolated container) |
+| No test for descendant cleanup | `0dcf9cd` | `crates/griller-runtime/tests/process_group.rs` — 5 tests, three independent liveness signals |
+| No test for stdin isolation | `0dcf9cd` | `stdin_is_closed_so_a_reading_command_gets_eof` |
+| No test pinning the derived replay timeout | `0dcf9cd` | `derived_replay_command_carries_the_canonical_replay_timeout` |
+| Tracked docs stated a "120 s cap" that never matched `MAX_TIMEOUT_MS` (600 s) | `0dcf9cd` | `docs/mcp.md`, `docs/security.md`, `docs/verification-pipeline.md` corrected |
 
 ### OPEN
 
 | Defect | Location | Effect |
 |---|---|---|
-| Gate default timeout 120 s vs replay budget 600 s | `crates/griller-gate/src/config.rs:10` vs `crates/griller-core/src/command.rs:21` | Cold replays time out at the gate. Fails **closed** as `GATE_UNAVAILABLE`. Availability only. |
-| Timeout kills the direct child only; no process-group kill | `crates/griller-runtime/src/execution.rs:189` (`child.kill()`) | `setpgid`/`killpg`/`setsid` occur **0** times in the codebase. Orphaned `rustc` grandchildren can survive and perturb a later verification. **Reproducibility** defect. |
 | Trigger silent-skip leaves no auditable record | `.opencode/plugins/griller-gate.ts:393-397` | A non-completion message is logged to the app log only. The plugin cannot author a decision record — records are written by the `griller-gate` binary. The proposed `NO_COMPLETION_ASSERTION` record is **not implemented**. |
 | 4 of 8 attack kinds unimplemented | `crates/griller-mcp/src/plan.rs` (`IMPLEMENTED_ATTACKS`) | `Completeness`, `Invert`, `Robustness`, `RequirementCoverage` are rejected as `INVALID_REQUEST`, never silently dropped. Fail-closed, but `AdversariallyVerified` is unreachable. **Capability** gap, not a safety gap. |
 | `(Fact, Unverifiable)` and `(Design, Unverifiable)` map to `AlwaysWarn` | `crates/griller-policy/src/table.rs:103,112` | A dirty tree with an explicit non-completion claim kind yields `WARN`, not `BLOCK`. Pre-existing policy, unreachable via the plugin (which always uses `Completion`), reachable by a direct MCP caller. |
 | No kernel-level isolation | `Enforcement::m1_none()` | Truthfully reported as `NotEnforced` for network isolation and OS sandboxing. Honest by design, not a defect. |
 | `e2e_mock_opencode_griller.py` cannot pass as written | `timeout=30` vs 600 s budget | Never run; requires a live MCP server. |
 | `~/.config/griller/gate.json` points at a non-existent path | `~/.config/griller/` | Fails closed. Not modified. |
+
+### PLATFORM-LIMITED
+
+**Verified on Linux only.** Full detail in
+[PLATFORM_EXECUTION_LIMITATIONS.md](PLATFORM_EXECUTION_LIMITATIONS.md).
+
+| Item | Linux | Non-Unix |
+|---|---|---|
+| Process-group creation and `killpg` teardown | **PROVEN** (host + isolated container) | **NOT IMPLEMENTED** — direct-child fallback (`execution.rs:203`) |
+| Descendant termination | **PROVEN** | **NOT PROVEN** |
+| Timeout liveness (`execute` returns) | **PROVEN** | **NOT PROVEN** — the stdout/stderr pipe-inheritance mechanism is not platform-specific, so the pre-Phase-2 hang is expected to persist there |
+| Second-run isolation from orphans | **PROVEN** | **NOT PROVEN** |
+
+CI covers `ubuntu-latest` only. macOS/BSD take the same `cfg(unix)` branch but are untested.
+**This is not a claim that non-Unix is broken — it is unverified, and its code shape is the
+pre-Phase-2 shape.** No cross-platform supervision was implemented or is proposed.
+
+### ARCHITECTURAL CHANGES ACCEPTED (not open defects)
+
+Recorded so they are not rediscovered as surprises.
+
+| Change | Consequence | Detail |
+|---|---|---|
+| `griller-runtime` moved `#![forbid(unsafe_code)]` → `#![deny(unsafe_code)]` | That crate no longer has an *absolute* no-unsafe guarantee. One annotated function; negative control confirms any other `unsafe` is a compile error. The other 7 crates keep `forbid`. | [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md) |
+| `libc` added as a direct dependency of `griller-runtime` | The recorded property *"zero third-party runtime dependencies"* is now **inaccurate**. `libc` was already a transitive dependency; the `Cargo.lock` delta is +2 lines and no new package was added. | [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md) §6 |
+| Gate outer envelope now **equals** the inner replay budget | A replay consuming the full 600 s could reach both deadlines together and truncate the *reporting* edge. A margin would fix it; that is a product decision, deliberately not taken. | [TIMEOUT_SEMANTICS.md](TIMEOUT_SEMANTICS.md) §4-5 |
 
 ### DEFERRED
 
