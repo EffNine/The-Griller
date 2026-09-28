@@ -54,6 +54,21 @@ pub mod canonical {
     ];
 }
 
+/// What the host's extraction layer found in the assistant message.
+///
+/// This is a **pre-adjudication observation**, not a verdict. The gate uses it
+/// only to decide whether a verification attempt exists to record; it never
+/// reaches the Griller adjudication pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionExtraction {
+    /// The host extracted a completion assertion. The normal path.
+    Extracted,
+    /// The host observed a completion boundary but found no completion
+    /// assertion to extract, so there was nothing to verify.
+    NoAssertion,
+}
+
 /// An agent-agnostic completion boundary event.
 ///
 /// The host (e.g. the OpenCode adapter) constructs this from its own notion of
@@ -78,6 +93,12 @@ pub struct CompletionEvent {
     pub commit: Option<String>,
     /// Wall-clock timestamp of the event in milliseconds since the epoch.
     pub timestamp_ms: u64,
+    /// What the host's extraction layer found. **Absent means the host
+    /// extracted a claim**, which is the behaviour of every host that predates
+    /// this field — so the field is backward compatible and an absent value is
+    /// never interpreted as "no assertion".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<CompletionExtraction>,
 }
 
 impl CompletionEvent {
@@ -109,6 +130,16 @@ pub enum GateStatus {
     /// The Griller could not run (unavailable, malformed, stale, timeout).
     /// Never converted to PASS. Fail-closed by default.
     Unavailable,
+    /// The host observed a completion boundary but extracted **no completion
+    /// assertion**, so there was nothing to verify.
+    ///
+    /// This is neither a refusal nor a failure: the gate ran, and the honest
+    /// outcome is that no verification was applicable. It is deliberately
+    /// distinct from [`GateStatus::Unavailable`], which means something *did*
+    /// go wrong. Never converted to PASS, and never surfaced to the agent as a
+    /// notice — a host must not turn an ordinary non-completion message into an
+    /// agent-visible warning.
+    NoCompletionAssertion,
 }
 
 impl GateStatus {
@@ -130,6 +161,13 @@ impl GateStatus {
     /// True when verification itself was unavailable.
     pub fn is_unavailable(self) -> bool {
         matches!(self, GateStatus::Unavailable)
+    }
+
+    /// True when the host extracted no completion assertion, so nothing was
+    /// verified. Distinct from `is_unavailable` (something failed) and from
+    /// `is_rejected` (something was refused).
+    pub fn is_no_completion_assertion(self) -> bool {
+        matches!(self, GateStatus::NoCompletionAssertion)
     }
 }
 
@@ -228,6 +266,10 @@ impl GateDecision {
                 self.required_action.as_deref().unwrap_or("")
             ),
             GateStatus::Unavailable => "GATE_UNAVAILABLE".to_string(),
+            GateStatus::NoCompletionAssertion => format!(
+                "GATE_NO_COMPLETION_ASSERTION reason={}",
+                self.reason_code.as_deref().unwrap_or("")
+            ),
         }
     }
 }

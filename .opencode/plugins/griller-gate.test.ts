@@ -473,3 +473,83 @@ Zero modifications to M2/M3/M4/M5/M7 logic, policy table, or verification semant
     expect(extract_completion_claim("Done. All tests pass.").claim).toBe("All tests pass.")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Decision-handling contract (Phase 3 — NO_COMPLETION_ASSERTION)
+// ---------------------------------------------------------------------------
+//
+// The 24 extraction tests above cover the pure predicate only; the event
+// handler has never been exercised. These are the first focused tests of the
+// decision-handling boundary, and they deliberately test *the rule the handler
+// implements* rather than the handler itself (the plugin cannot be imported —
+// it uses OpenCode internals).
+//
+// The contract under test:
+//
+//   status === "accepted"                  -> the ONLY status that may proceed
+//   status === "no_completion_assertion"   -> record it, never notify the agent
+//   anything else, incl. unknown/future    -> fail closed, notify the agent
+//
+// Mirrors the branch in handleDecision() in griller-gate.ts. Kept in sync
+// with .opencode/plugins/griller-gate.ts.
+
+/** The three outcomes handleDecision() can take, as a pure rule. */
+function decideOutcome(
+  decision: Record<string, unknown> | null,
+): "proceed" | "record_only" | "notify_agent" {
+  const status = decision?.status as string | undefined
+  // Order matters: `accepted` first, then the non-prompting observation, then
+  // the fail-closed default for everything else.
+  if (status === "accepted") return "proceed"
+  if (status === "no_completion_assertion") return "record_only"
+  return "notify_agent"
+}
+
+describe("completion decision handling", () => {
+  it("accepted is the only status that lets the completion proceed", () => {
+    expect(decideOutcome({ status: "accepted", verdict: "pass" })).toBe("proceed")
+  })
+
+  it("no_completion_assertion is recorded but never notified to the agent", () => {
+    const decision = {
+      status: "no_completion_assertion",
+      reason_code: "NO_COMPLETION_ASSERTION",
+      verdict: undefined,
+    }
+    expect(decideOutcome(decision)).toBe("record_only")
+  })
+
+  it("warned and blocked both notify the agent (unchanged behaviour)", () => {
+    expect(decideOutcome({ status: "warned" })).toBe("notify_agent")
+    expect(decideOutcome({ status: "blocked" })).toBe("notify_agent")
+  })
+
+  it("unavailable still notifies the agent (unchanged behaviour)", () => {
+    expect(decideOutcome({ status: "unavailable", reason_code: "STALE_SERVER" })).toBe(
+      "notify_agent",
+    )
+  })
+
+  it("an unknown or future status fails closed and notifies the agent", () => {
+    // The default must be fail-closed: a status this host does not understand
+    // must never be treated as "nothing to say".
+    expect(decideOutcome({ status: "some_future_status" })).toBe("notify_agent")
+    expect(decideOutcome({ status: "" })).toBe("notify_agent")
+    expect(decideOutcome({ status: undefined })).toBe("notify_agent")
+  })
+
+  it("a null decision (gate failed to produce one) still notifies the agent", () => {
+    expect(decideOutcome(null)).toBe("notify_agent")
+  })
+
+  it("the no-assertion decision carries no verdict and no agent-facing message", () => {
+    // The gate constructs this decision with `verdict: None` and
+    // `required_action_message: None`, which is what keeps the handler silent.
+    const decision = {
+      status: "no_completion_assertion",
+      reason_code: "NO_COMPLETION_ASSERTION",
+    }
+    expect(decision.verdict).toBeUndefined()
+    expect(decision.required_action_message).toBeUndefined()
+  })
+})

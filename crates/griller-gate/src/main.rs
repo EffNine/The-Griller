@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use griller_gate::config::GateConfig;
 use griller_gate::runner::{run_gate, GateOutcome};
-use griller_gate::{CompletionEvent, GATE_SCHEMA_VERSION};
+use griller_gate::{CompletionEvent, CompletionExtraction, GATE_SCHEMA_VERSION};
 
 const EXIT_OK: u8 = 0;
 const EXIT_CONFIG_ERROR: u8 = 2;
@@ -137,7 +137,13 @@ fn read_event() -> Result<CompletionEvent, String> {
         return Err("completion event: repository must not be empty".into());
     }
     if event.claim.trim().is_empty() {
-        return Err("completion event: claim must not be empty".into());
+        // An empty claim is only legitimate when the host explicitly reported
+        // that it found no completion assertion. Overloading an empty claim
+        // without that signal would be ambiguous, which is the whole reason the
+        // `extraction` field exists rather than reusing `claim`.
+        if event.extraction != Some(CompletionExtraction::NoAssertion) {
+            return Err("completion event: claim must not be empty".into());
+        }
     }
     Ok(event)
 }

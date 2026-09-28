@@ -38,6 +38,9 @@ pub enum LifecycleStage {
     GateBlocked,
     /// Final gate status: verification unavailable (fail-closed).
     GateUnavailable,
+    /// Final gate status: the host extracted no completion assertion, so there
+    /// was nothing to verify. Not a rejection and not a failure.
+    GateNoCompletionAssertion,
 }
 
 impl LifecycleStage {
@@ -54,6 +57,7 @@ impl LifecycleStage {
             LifecycleStage::GateWarned => "GATE_WARNED",
             LifecycleStage::GateBlocked => "GATE_BLOCKED",
             LifecycleStage::GateUnavailable => "GATE_UNAVAILABLE",
+            LifecycleStage::GateNoCompletionAssertion => "GATE_NO_COMPLETION_ASSERTION",
         }
     }
 }

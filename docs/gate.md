@@ -48,7 +48,8 @@ Before invoking any tool, the gate checks the MCP server's identity against cano
 
 ## Fail-closed defaults
 
-- **Unavailable**: gate could not run (uninitialized config, MCP server unavailable, stale server, timeout). Never silently PASS. Default when no config can be loaded or the MCP binary cannot be started.
+- **NoCompletionAssertion**: the host observed a completion boundary but extracted no completion assertion, so there was nothing to verify. Neither a refusal nor a failure. Never converted to PASS, and **never surfaced to the agent** — a non-completion message must not produce a notice. The decision is still persisted for audit.
+- **Unavailable**: gate could not run (uninitialized config, MCP server unavailable, stale server, timeout). Never silently PASS. Default when no config can be loaded or the MCP binary cannot be started. Unlike `NoCompletionAssertion`, this **does** carry a `required_action_message` and does notify the agent.
 - **Warned**: Griller returned WARN verdict. The gate maps to `GateStatus::Warned`; the completion is **not** accepted as verified unless `warn_not_pass` is false in config. The gate injects a `noReply` user message so the agent learns the completion was not accepted.
 - **Blocked**: Griller returned BLOCK verdict. Completion is explicitly rejected.
 - **Accepted**: Griller returned PASS verdict. Completion is accepted.
@@ -79,7 +80,19 @@ The gate uses a deterministic three-path extraction algorithm (no LLM) to produc
 
 **Completion assertion predicate**: a sentence counts only if it declares an outcome — a past-tense accomplishment (`implemented`, `fixed`, `added`, `resolved`, `verified`, …), an explicit test/build outcome (`all tests pass`, `490 tests passed`, `tests (511 passed)`, `the build succeeds`), a declarative state (`is done`, `is complete`, `everything works`), a conjunctive exit-0 phrasing, a terse standalone assertion (`Done.`, `All done.`, `Ready.`, `Complete.`, `That's done.`, `It's ready.`, `Shipped.`, `Closed.`), or a counted outcome with no noun (`All 511 pass.`). Bare keywords appearing in prose (`test`, `build`, `run`, `check`, `claim`) never match: planning prose, task directives ("Implement X."), and verification *discussion* are not completion events and return no claim. A bare `ready` likewise does not match inside prose, but a sentence that is *only* an outcome word is a completion assertion.
 
-If no claim can be extracted, the message is not a completion event — the plugin skips it silently (no gate run, no injection). Fail-closed behaviour applies only when a gate run itself fails (binary missing, non-zero exit, unusable output).
+If no claim can be extracted, the message is not a completion event. The plugin still reports
+it to the gate with `extraction: "no_assertion"`, and the gate records a
+`no_completion_assertion` decision (`reason_code: NO_COMPLETION_ASSERTION`) through the
+normal persistence path. **The agent is not notified.** Fail-closed behaviour applies only
+when a gate run itself fails (binary missing, non-zero exit, unusable output).
+
+The distinction is deliberate: `no_completion_assertion` means the gate ran and there was
+nothing to verify, while `unavailable` means something went wrong. Reusing `unavailable`
+would restore the old behaviour of injecting a notice onto every technical message, which
+is exactly what this separation avoids. The record carries `verdict: null`,
+`griller_report: null`, and no `required_action_message`, because no claim reached the
+Griller, no evidence was collected, and no epistemic status was assigned — this is a
+pre-adjudication fact, not a verdict.
 
 Hard bounds:
 - Maximum extracted claim length: 300 characters.

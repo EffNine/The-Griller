@@ -21,6 +21,7 @@ use crate::health_check::check_server_health;
 use crate::lifecycle::{LifecycleLog, LifecycleStage};
 use crate::mcp_client::McpSession;
 use crate::report::summarize_report;
+use crate::CompletionExtraction;
 use crate::{
     CompletionEvent, EventSummary, GateDecision, GateStatus, GateTiming, IntegrationInfo,
     GATE_SCHEMA_VERSION,
@@ -46,6 +47,22 @@ pub fn run_gate(event: &CompletionEvent, config: &GateConfig) -> GateOutcome {
     if let Err(message) = config.validate() {
         return GateOutcome::Failed(err::invalid_config(message));
     }
+
+    // The host observed a completion boundary but extracted no completion
+    // assertion, so there is nothing to verify. This is checked after config
+    // validation (a real operator error still wins) and before any MCP work,
+    // because connecting and adjudicating a non-claim would be meaningless.
+    //
+    // It is a *pre-adjudication observation*: no claim reached the Griller, no
+    // evidence was collected, and no epistemic status was assigned. The record
+    // says exactly that, and deliberately does not reuse `Unavailable`, which
+    // means something went wrong.
+    if event.extraction == Some(CompletionExtraction::NoAssertion) {
+        lifecycle.record(LifecycleStage::GrillerGateStarted);
+        lifecycle.record(LifecycleStage::GateNoCompletionAssertion);
+        return GateOutcome::Decision(no_completion_assertion_decision(event, &lifecycle));
+    }
+
     if !config.fail_closed {
         // The fail-closed default is deliberate. An explicitly disabled
         // fail-closed gate still never converts an integration failure into
@@ -201,6 +218,10 @@ pub fn run_gate(event: &CompletionEvent, config: &GateConfig) -> GateOutcome {
                 GateStatus::Warned => LifecycleStage::GateWarned,
                 GateStatus::Blocked => LifecycleStage::GateBlocked,
                 GateStatus::Unavailable => LifecycleStage::GateUnavailable,
+                // Unreachable: `NoCompletionAssertion` short-circuits above,
+                // before any Griller verdict exists. Mapped explicitly so the
+                // match stays exhaustive and the compiler keeps checking it.
+                GateStatus::NoCompletionAssertion => LifecycleStage::GateNoCompletionAssertion,
             };
             lifecycle.record(final_stage);
 
@@ -261,6 +282,78 @@ pub fn run_gate(event: &CompletionEvent, config: &GateConfig) -> GateOutcome {
                 t_connect,
             ))
         }
+    }
+}
+
+/// Reason code recorded when the host extracted no completion assertion.
+///
+/// Free-form and stable, in the same `SCREAMING_SNAKE` style as
+/// `CHECK_COMPLETION_FAILED` and `STALE_SERVER`. It is a `String` field, not an
+/// enum, so adding it required no vocabulary change and no migration of the
+/// existing records.
+pub const NO_COMPLETION_ASSERTION_REASON: &str = "NO_COMPLETION_ASSERTION";
+
+/// Build the decision for "the host observed a completion boundary but there
+/// was no completion assertion to verify".
+///
+/// This is deliberately shaped like [`unavailable_decision_with`] — same
+/// `GateDecision`, same single persistence path — but semantically distinct:
+///
+/// * `status` is [`GateStatus::NoCompletionAssertion`], never `Unavailable`,
+///   because **nothing failed**.
+/// * `verdict` is `None` and `griller_report` is `None`, because the Griller
+///   was never invoked and no adjudication occurred. There is no claim, no
+///   evidence, and no epistemic status anywhere in this record.
+/// * `required_action` is `None` and `required_action_message` is `None`,
+///   because there is nothing for the host to fix and **nothing for the host to
+///   show the agent**. A host that treats every decision carrying a
+///   `required_action_message` as agent-visible will correctly stay silent.
+///
+/// The host remains the authority on *whether* an assertion exists — extraction
+/// is a pure function of the assistant text and only the host saw it. The gate
+/// is the sole authority on what that observation *means* and on how it is
+/// written down.
+fn no_completion_assertion_decision(
+    event: &CompletionEvent,
+    lifecycle: &LifecycleLog,
+) -> GateDecision {
+    GateDecision {
+        schema_version: GATE_SCHEMA_VERSION.to_string(),
+        status: GateStatus::NoCompletionAssertion,
+        verdict: None,
+        reason_code: Some(NO_COMPLETION_ASSERTION_REASON.to_string()),
+        findings: vec![crate::report::Finding {
+            key: "completion_trigger".into(),
+            detail: "no completion assertion was extracted from the assistant message; \
+                     there was nothing to verify"
+                .into(),
+        }],
+        required_action: None,
+        required_action_message: None,
+        event: EventSummary {
+            repository: event.repository.clone(),
+            agent_id: event.agent_id.clone(),
+            session_id: event.session_id.clone(),
+            commit: event.commit.clone(),
+            timestamp_ms: event.timestamp_ms,
+        },
+        integration: IntegrationInfo {
+            // The Griller was never contacted. Reporting it as connected would
+            // misstate what happened, exactly as `m1_none()` exists to prevent
+            // for enforcement.
+            connected: false,
+            server_info: None,
+            health: None,
+            stale: false,
+            stale_reason: Some("griller not invoked: no completion assertion".into()),
+        },
+        griller_report: None,
+        timing: GateTiming {
+            connect_ms: 0,
+            check_ms: 0,
+            total_ms: 0,
+        },
+        lifecycle: lifecycle.clone().into_vec(),
     }
 }
 
@@ -368,6 +461,8 @@ mod tests {
             session_id: Some("test-session".into()),
             commit: None,
             timestamp_ms: 1,
+            // Absent means "assertion extracted" — the pre-existing behaviour.
+            extraction: None,
         }
     }
 

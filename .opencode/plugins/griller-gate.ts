@@ -388,32 +388,28 @@ export const GrillerGate: Plugin = async ({ client, directory }) => {
 
       const { claim: extractedClaim, original: originalMessage } =
         extract_completion_claim(text)
-      if (!extractedClaim) {
-        // No recognizable completion assertion in this message. An ordinary
-        // assistant message is not a completion event — skip silently rather
-        // than failing closed (the old behaviour injected an "unavailable"
-        // notice onto every technical discussion message).
-        state.lastChecked = latest.info.id
-        await log("info", "no completion assertion in message; skipping gate", {
-          sessionID,
-          messageLength: text.length,
-        })
-        return
-      }
 
       const repository = (latest.info as { path?: { root?: string } }).path?.root ?? directory
 
       const completionEvent = {
         schema_version: GATE_SCHEMA_VERSION,
         repository,
-        claim: extractedClaim,
+        // Empty when nothing was extracted; the gate only accepts that in
+        // combination with `extraction: "no_assertion"` below.
+        claim: extractedClaim ?? "",
+        // The plugin is the sensor: it reports what its extraction found. The
+        // gate owns what that means and writes the decision record. An absent
+        // `extraction` means "assertion present" for every pre-existing host.
+        extraction: extractedClaim
+          ? ("extracted" as const)
+          : ("no_assertion" as const),
         agent_id: "opencode",
         session_id: sessionID,
         timestamp_ms: Date.now(),
         // Diagnostic only — not sent to Griller as evidence.
         _diagnostic: {
           original_message_length: text.length,
-          extracted_claim_length: extractedClaim.length,
+          extracted_claim_length: extractedClaim?.length ?? 0,
         },
       }
 
@@ -458,6 +454,24 @@ export const GrillerGate: Plugin = async ({ client, directory }) => {
       await log("info", "completion accepted", {
         sessionID,
         verdict: decision?.verdict,
+        reasonCode: decision?.reason_code,
+      })
+      return
+    }
+
+    // The gate observed a completion boundary but found no completion
+    // assertion, so there was nothing to verify. This is neither a refusal nor
+    // a failure, and it is already recorded on the gate side — so it must NOT
+    // produce an agent-facing notice. Injecting here would restore exactly the
+    // behaviour the silent skip replaced: a warning on every ordinary
+    // technical message.
+    //
+    // Note the direction of the default below: `accepted` is the ONLY status
+    // that returns early, so an unknown or future status falls through to the
+    // fail-closed injection path.
+    if (status === "no_completion_assertion") {
+      await log("info", "no completion assertion; nothing to verify", {
+        sessionID,
         reasonCode: decision?.reason_code,
       })
       return

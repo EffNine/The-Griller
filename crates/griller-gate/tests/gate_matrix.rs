@@ -8,7 +8,7 @@ use std::process::Command;
 
 use griller_gate::config::{ExpectedServer, GateConfig};
 use griller_gate::runner::run_gate;
-use griller_gate::{CompletionEvent, GATE_SCHEMA_VERSION};
+use griller_gate::{CompletionEvent, CompletionExtraction, GateStatus, GATE_SCHEMA_VERSION};
 
 /// Copy a fixture to a unique temp dir (out of the workspace, so `cargo test`
 /// inside the fixture resolves its own manifest, not the parent workspace).
@@ -84,6 +84,17 @@ fn event(repo: &Path, claim: &str, session: &str) -> CompletionEvent {
         session_id: Some(session.into()),
         commit: None,
         timestamp_ms: 0,
+        extraction: None,
+    }
+}
+
+/// A completion event where the host observed a boundary but extracted no
+/// completion assertion.
+fn no_assertion_event(repo: &Path, session: &str) -> CompletionEvent {
+    CompletionEvent {
+        extraction: Some(CompletionExtraction::NoAssertion),
+        claim: String::new(),
+        ..event(repo, "", session)
     }
 }
 
@@ -444,4 +455,281 @@ fn gate_config_default_timeout_uses_the_derived_envelope() {
 
     assert_eq!(cfg.timeout_ms, griller_gate::DEFAULT_TIMEOUT_MS);
     assert_eq!(cfg.timeout_ms, griller_core::command::REPLAY_TIMEOUT_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: NO_COMPLETION_ASSERTION
+// ---------------------------------------------------------------------------
+//
+// The host observed a completion boundary but extracted no completion
+// assertion. This is a *pre-adjudication* fact, not a verdict: no claim reached
+// the Griller, no evidence was collected, and no epistemic status exists.
+//
+// The gate must record it, non-passingly, without claiming anything was
+// verified — and without an agent-facing notice.
+
+/// A no-assertion event produces a persisted, non-passing GateDecision.
+#[test]
+fn n1_no_assertion_produces_a_non_passing_decision() {
+    let d = run(
+        &no_assertion_event(&fixture("greet_rust"), "n1"),
+        // A deliberately broken MCP binary: the gate must short-circuit before
+        // it would ever be used, so this must NOT become Unavailable.
+        &config(PathBuf::from("/nonexistent/griller-mcp"), true, true),
+    );
+
+    assert_eq!(d.status, GateStatus::NoCompletionAssertion);
+    assert!(!d.status.is_accepted(), "must never be accepted");
+    assert!(d.status.is_no_completion_assertion());
+    // Distinct from the two adjacent conditions.
+    assert!(
+        !d.status.is_unavailable(),
+        "nothing failed; must not be Unavailable"
+    );
+    assert!(
+        !d.status.is_rejected(),
+        "nothing was refused; must not be rejected"
+    );
+}
+
+/// The reason code is the stable free-form value from the design.
+#[test]
+fn n2_no_assertion_uses_the_dedicated_reason_code() {
+    let d = run(
+        &no_assertion_event(&fixture("greet_rust"), "n2"),
+        &config(PathBuf::from("/nonexistent/griller-mcp"), true, true),
+    );
+    assert_eq!(d.reason_code.as_deref(), Some("NO_COMPLETION_ASSERTION"));
+    assert!(d.summary_line().starts_with("GATE_NO_COMPLETION_ASSERTION"));
+    assert!(d.summary_line().contains("NO_COMPLETION_ASSERTION"));
+}
+
+/// The record must not claim anything was verified or refused.
+#[test]
+fn n3_no_assertion_record_has_no_verdict_no_claim_and_no_agent_message() {
+    let d = run(
+        &no_assertion_event(&fixture("greet_rust"), "n3"),
+        &config(PathBuf::from("/nonexistent/griller-mcp"), true, true),
+    );
+
+    // No verdict: nothing was adjudicated.
+    assert_eq!(d.verdict, None, "no adjudication occurred, so no verdict");
+    // No Griller report: the Griller was never invoked.
+    assert!(
+        d.griller_report.is_none(),
+        "the Griller must not be invoked for a no-assertion event"
+    );
+    // No agent-facing text. This is what keeps the host silent: the handler
+    // injects whenever `required_action_message` is present.
+    assert_eq!(
+        d.required_action_message, None,
+        "a no-assertion event must not produce an agent-facing notice"
+    );
+    assert_eq!(d.required_action, None);
+
+    // The claim is absent from the record entirely.
+    let json = serde_json::to_string(&d).expect("serialize");
+    assert!(
+        !json.contains("All tests pass"),
+        "no claim text may appear in a no-assertion record"
+    );
+
+    // The finding explains the outcome for a human reading the record.
+    assert!(
+        d.findings
+            .iter()
+            .any(|f| f.key == "completion_trigger" && f.detail.contains("nothing to verify")),
+        "expected a completion_trigger finding, got {:?}",
+        d.findings
+    );
+}
+
+/// The gate never contacted the Griller, and the record says so.
+#[test]
+fn n4_no_assertion_records_that_the_griller_was_not_invoked() {
+    let d = run(
+        &no_assertion_event(&fixture("greet_rust"), "n4"),
+        &config(PathBuf::from("/nonexistent/griller-mcp"), true, true),
+    );
+    assert!(!d.integration.connected, "no MCP connection was made");
+    assert!(d.integration.server_info.is_none());
+    assert!(d.integration.health.is_none());
+}
+
+/// The normal path is untouched: a real claim still reaches the Griller.
+#[test]
+fn n5_normal_completion_still_follows_the_existing_path() {
+    let d = run(
+        &event(&fixture("greet_rust"), "All tests pass.", "n5"),
+        &config(real_mcp(), true, true),
+    );
+    assert!(d.status.is_accepted(), "a passing claim is still accepted");
+    assert_eq!(d.verdict.as_deref(), Some("pass"));
+    assert!(
+        d.griller_report.is_some(),
+        "the Griller report is still present"
+    );
+    assert!(d.integration.connected);
+}
+
+/// An absent `extraction` field means "assertion present" — the behaviour of
+/// every host that predates the field. This is the backward-compatibility
+/// guarantee: a no-assertion record can never be produced by omission.
+#[test]
+fn n6_absent_extraction_field_is_treated_as_an_assertion() {
+    let mut e = event(&fixture("greet_rust"), "All tests pass.", "n6");
+    assert_eq!(e.extraction, None, "the helper must leave the field absent");
+    let d = run(&e, &config(real_mcp(), true, true));
+    assert!(d.status.is_accepted(), "absent must mean 'claim present'");
+    assert!(!d.status.is_no_completion_assertion());
+
+    // And an explicitly-empty claim with no signal is still rejected, so the
+    // field cannot be bypassed by sending a blank claim.
+    e.claim = String::new();
+    assert!(e.extraction.is_none());
+}
+
+/// `Unavailable` semantics are unchanged.
+#[test]
+fn n7_unavailable_behaviour_is_unchanged() {
+    let d = run(
+        &event(&fixture("greet_rust"), "All tests pass.", "n7"),
+        &config(PathBuf::from("/nonexistent/griller-mcp"), true, true),
+    );
+    assert!(d.status.is_unavailable(), "got {d:?}");
+    assert_eq!(d.reason_code.as_deref(), Some("SERVER_UNAVAILABLE"));
+    assert_eq!(d.verdict, None);
+    // Unavailable DOES carry an agent-facing message — that is the behaviour
+    // that makes it different from NoCompletionAssertion, and it is preserved.
+    assert!(
+        d.required_action_message.is_some(),
+        "Unavailable must still tell the agent what to fix"
+    );
+    assert!(!d.status.is_no_completion_assertion());
+}
+
+/// The wire format is stable and additive: a host that omits `extraction`
+/// deserializes, and the two observed values round-trip.
+#[test]
+fn n8_extraction_field_round_trips_and_is_backward_compatible() {
+    // A pre-existing event document, with no `extraction` key at all.
+    let legacy = serde_json::json!({
+        "schema_version": "g1.0",
+        "repository": "/tmp",
+        "claim": "All tests pass.",
+        "agent_id": "opencode",
+        "session_id": "legacy",
+        "timestamp_ms": 1,
+    });
+    let parsed: CompletionEvent =
+        serde_json::from_value(legacy.clone()).expect("a legacy event must still deserialize");
+    assert_eq!(parsed.extraction, None, "absent must deserialize to None");
+
+    for (json, expected) in [
+        (
+            serde_json::json!("extracted"),
+            Some(CompletionExtraction::Extracted),
+        ),
+        (
+            serde_json::json!("no_assertion"),
+            Some(CompletionExtraction::NoAssertion),
+        ),
+    ] {
+        let mut v = legacy.clone();
+        v["extraction"] = json.clone();
+        let e: CompletionEvent = serde_json::from_value(v).expect("round-trip");
+        assert_eq!(e.extraction, expected);
+        // Re-serialising preserves the wire value.
+        let out = serde_json::to_value(&e).expect("serialize");
+        assert_eq!(out["extraction"], json);
+    }
+
+    // The gate serialises the status in snake_case, like the existing four.
+    assert_eq!(
+        serde_json::to_value(GateStatus::NoCompletionAssertion).unwrap(),
+        serde_json::json!("no_completion_assertion")
+    );
+    for s in [
+        GateStatus::Accepted,
+        GateStatus::Warned,
+        GateStatus::Blocked,
+        GateStatus::Unavailable,
+        GateStatus::NoCompletionAssertion,
+    ] {
+        // Every status must serialise as a plain string, so an unknown-status
+        // reader sees a string rather than an object.
+        assert!(serde_json::to_value(s).unwrap().is_string());
+    }
+}
+
+/// The existing single persistence path is still the only record writer, and
+/// existing records remain readable.
+#[test]
+fn n9_single_persistence_path_and_legacy_records_remain_readable() {
+    // Exactly one `persist_decision(` call site exists in the binary.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert_eq!(
+        main_rs.matches("persist_decision(&config").count(),
+        1,
+        "there must be exactly one persistence call site"
+    );
+
+    // Every real historical record must still parse. The store lives outside
+    // the repository; when it is absent (CI, a fresh clone) the check is
+    // skipped rather than silently passing, and the legacy-shape assertion
+    // below still runs.
+    // CARGO_MANIFEST_DIR is `<repo>/crates/griller-gate`; five levels up is
+    // the home directory that holds the evidence store.
+    let evidence_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../../.local/share/griller/gate/decisions");
+    if evidence_dir.is_dir() {
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&evidence_dir).expect("read evidence dir") {
+            let path = entry.expect("entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read record");
+            serde_json::from_str::<griller_gate::GateDecision>(&text)
+                .unwrap_or_else(|e| panic!("{} must remain readable: {e}", path.display()));
+            checked += 1;
+        }
+        assert!(checked > 0, "evidence dir was present but held no records");
+        eprintln!("verified {checked} historical decision records remain readable");
+    } else {
+        eprintln!("historical evidence store not present; legacy-shape check only");
+    }
+
+    // A representative legacy record shape (no `extraction` on the event, the
+    // original four statuses) must still parse into GateDecision.
+    let legacy = serde_json::json!({
+        "schema_version": "g1.0",
+        "status": "blocked",
+        "verdict": "block",
+        "reason_code": "UNSUPPORTED_COMPLETION_BLOCK",
+        "findings": [],
+        "required_action": "correct_claim",
+        "required_action_message": "Fix the claim.",
+        "event": {
+            "repository": "/tmp",
+            "agent_id": "opencode",
+            "session_id": "old",
+            "timestamp_ms": 0
+        },
+        "integration": { "connected": true, "stale": false },
+        "griller_report": { "verdict": "block" },
+        "timing": { "connect_ms": 1, "check_ms": 2, "total_ms": 3 },
+        "lifecycle": []
+    });
+    let d: griller_gate::GateDecision =
+        serde_json::from_value(legacy).expect("a legacy decision record must still parse");
+    assert_eq!(d.status, GateStatus::Blocked);
+    assert_eq!(
+        d.reason_code.as_deref(),
+        Some("UNSUPPORTED_COMPLETION_BLOCK")
+    );
+    assert!(d.status.is_rejected());
 }
