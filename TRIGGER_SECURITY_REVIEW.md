@@ -5,9 +5,11 @@
 > The FAIL-OPEN classification below is **preserved as the point-in-time
 > analysis that drove the fix**. It was implemented in `a360b7c` (2026-09-27):
 > terse assertions now produce claims and the regression table is pinned by
-> test. The 23/23 figure is the count at review time; current is 24/24. One
-> part of this review remains open: the silent-skip observability gap — see
-> [NEXT_PHASE.md](NEXT_PHASE.md) step 4.
+> test. The 23/23 figure is the count at review time; current is 31/31.
+> **The silent-skip observability gap this review left open was closed in
+> `e575ab7`** (2026-09-30): a no-assertion boundary is now recorded as a
+> non-passing `no_completion_assertion` decision. This review therefore has no
+> remaining open items. See [COMPLETION_TRIGGER_OBSERVABILITY_RECON.md](COMPLETION_TRIGGER_OBSERVABILITY_RECON.md).
 
 **This is the critical review.** The trigger layer is part of the security boundary. The Rust
 verdict engine being fail-closed does **not** make the trigger fail-closed.

@@ -15,11 +15,11 @@ older document is a point-in-time record that has been marked as superseded.
 |---|---|
 | Path | `/home/afnan/projects/active/verification-gate` |
 | Recovered from | `/home/afnan/projects/archive/legacy/the-griller` (untouched) |
-| `HEAD` | `0dcf9cd89c7de77ff2b22472e5a3fc94a267fb63` |
-| `HEAD` subject | `fix(griller): harden execution timeout cleanup` |
-| Parent | `bfa1be0f2c810b928e176691660ae6b203039999` |
+| `HEAD` | `e575ab757ff1ed964599ac9f3d658fd9a89a2008` |
+| `HEAD` subject | `feat(griller): record no-completion-assertion outcomes` |
+| Parent | `df87efa6c00eb97bfcfeb574bed4b5e8304b3a31` |
 | Remote | `origin` → `https://github.com/EffNine/The-Griller.git` |
-| Commits ahead of `origin/main` | **4** (`a360b7c`, `16c6852`, `bfa1be0`, `0dcf9cd`) — **not pushed** |
+| Commits ahead of `origin/main` | **6** (`a360b7c`, `16c6852`, `bfa1be0`, `0dcf9cd`, `df87efa`, `e575ab7`) — **not pushed** |
 | Working tree | **clean** — 0 modified, 0 staged |
 | Untracked | **0** — the 19 recovery/review records and the 6 Phase 1.5 documents were added to version control in `8800a0b` |
 
@@ -35,17 +35,19 @@ confirmed as the intended long-term home for this work, so nothing has been push
 | Format | `cargo fmt --all -- --check` | **PASS** (exit 0) |
 | Compile | `cargo check --workspace` | **PASS** (exit 0, 0 warnings) |
 | Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **PASS** (0 warnings) |
-| Rust tests | `cargo test --workspace` | **PASS** — **532 passed, 0 failed**, 6 ignored, 36 test binaries |
-| Plugin tests | `npx vitest run` | **PASS** — **24 / 24** |
+| Rust tests | `cargo test --workspace` | **PASS** — **541 passed, 0 failed**, 6 ignored, 36 test binaries |
+| Plugin tests | `npx vitest run` | **PASS** — **31 / 31** |
 | Cold build | from empty `target/` | **PASS** (verified in Phase 1; not re-run since) |
 
 **Rust test count history:** 515 at recovery → 515 after `a360b7c` (the recovered work
 added tests and the Phase 1.2 fix pinned more) → 523 after `16c6852` (+8 dirty-state tests)
-→ **532** after `0dcf9cd` (+9 execution tests: 5 process-group, 1 stdin isolation, 1
-replay-timeout, 2 gate timeout invariant).
+→ 532 after `0dcf9cd` (+9 execution tests: 5 process-group, 1 stdin isolation, 1
+replay-timeout, 2 gate timeout invariant) → **541** after `e575ab7` (+9 no-assertion tests,
+`n1`–`n9`).
 
-**Plugin test count history:** 23 at recovery → **24** after `a360b7c`. Unchanged by
-Phase 2.
+**Plugin test count history:** 23 at recovery → 24 after `a360b7c` → 24 after `0dcf9cd`
+(unchanged) → **31** after `e575ab7` (+7 decision-handling tests, the first tests of that
+boundary).
 
 > Two tracked documents still state **424** tests. Both describe the M8 field-validation
 > run and are historically accurate for that point in time, so they were left alone:
@@ -113,12 +115,12 @@ See [EVIDENCE_STATUS.md](EVIDENCE_STATUS.md).
 | No test for stdin isolation | `0dcf9cd` | `stdin_is_closed_so_a_reading_command_gets_eof` |
 | No test pinning the derived replay timeout | `0dcf9cd` | `derived_replay_command_carries_the_canonical_replay_timeout` |
 | Tracked docs stated a "120 s cap" that never matched `MAX_TIMEOUT_MS` (600 s) | `0dcf9cd` | `docs/mcp.md`, `docs/security.md`, `docs/verification-pipeline.md` corrected |
+| **Trigger silent-skip left no auditable record** | `e575ab7` | The plugin now reports its extraction state and the gate persists a dedicated non-passing `GateDecision` (`status: no_completion_assertion`, `reason_code: NO_COMPLETION_ASSERTION`) through the **existing single persistence path**. The Griller is not invoked, and **no agent-facing injection occurs for this status**. Detail: [COMPLETION_TRIGGER_OBSERVABILITY_RECON.md](COMPLETION_TRIGGER_OBSERVABILITY_RECON.md) |
 
 ### OPEN
 
 | Defect | Location | Effect |
 |---|---|---|
-| Trigger silent-skip leaves no auditable record | `.opencode/plugins/griller-gate.ts:393-397` | A non-completion message is logged to the app log only. The plugin cannot author a decision record — records are written by the `griller-gate` binary. The proposed `NO_COMPLETION_ASSERTION` record is **not implemented**. |
 | 4 of 8 attack kinds unimplemented | `crates/griller-mcp/src/plan.rs` (`IMPLEMENTED_ATTACKS`) | `Completeness`, `Invert`, `Robustness`, `RequirementCoverage` are rejected as `INVALID_REQUEST`, never silently dropped. Fail-closed, but `AdversariallyVerified` is unreachable. **Capability** gap, not a safety gap. |
 | `(Fact, Unverifiable)` and `(Design, Unverifiable)` map to `AlwaysWarn` | `crates/griller-policy/src/table.rs:103,112` | A dirty tree with an explicit non-completion claim kind yields `WARN`, not `BLOCK`. Pre-existing policy, unreachable via the plugin (which always uses `Completion`), reachable by a direct MCP caller. |
 | No kernel-level isolation | `Enforcement::m1_none()` | Truthfully reported as `NotEnforced` for network isolation and OS sandboxing. Honest by design, not a defect. |

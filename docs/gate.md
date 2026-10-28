@@ -96,7 +96,7 @@ pre-adjudication fact, not a verdict.
 
 Hard bounds:
 - Maximum extracted claim length: 300 characters.
-- Empty extraction → skip silently (not a completion event).
+- Empty extraction → recorded as `no_completion_assertion` (not a completion event; see below).
 - Markdown formatting (bold, italics, inline code) is stripped.
 - Markdown tables and fenced code blocks are stripped before heuristic scanning.
 - Prompt injection patterns (`ignore.*griller`, `disregard.*gate`, `bypass.*check`, `report pass/approved`) in heuristic matches are rejected.
@@ -176,7 +176,9 @@ current behavior is:
 1. `session.idle` fires automatically when the agent finishes its turn.
 2. The gate extracts the completion claim from the latest assistant message.
 3. If no claim can be extracted, the message was ordinary discussion (not a
-   completion event) — the gate skips it silently.
+   completion event). The gate records it as `no_completion_assertion` — a
+   non-passing decision — without invoking the Griller and without notifying
+   the agent. The completion is neither accepted nor refused.
 4. If extraction succeeds, the gate runs `griller-gate check` and receives a
    verdict.
 5. If the verdict is `Accepted`, nothing further happens — the session

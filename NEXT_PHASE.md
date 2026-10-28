@@ -1,10 +1,12 @@
 # NEXT_PHASE.md
 
-**The remaining engineering sequence.** Nothing here is implemented.
+**The remaining engineering sequence.** Nothing here is implemented, except where an item
+is explicitly marked COMPLETE.
 
-Reconciled after Phase 2. Phase 2 closed the timeout divergence and the process-group /
-descendant-liveness defects; those are no longer listed. Current state:
-[CURRENT_STATE.md](CURRENT_STATE.md). Phase 2 outcome: [PHASE_2_STATE.md](PHASE_2_STATE.md).
+Reconciled after `e575ab7`. Phase 2 closed the timeout divergence and the process-group /
+descendant-liveness defects; `e575ab7` closed the trigger observability gap. Those are no
+longer open items. Current state: [CURRENT_STATE.md](CURRENT_STATE.md). Phase 2 outcome:
+[PHASE_2_STATE.md](PHASE_2_STATE.md).
 
 Items are grouped by **what each depends on**, not by preference. Where an item is blocked,
 the blocker is named. No priority scores are used.
@@ -40,6 +42,13 @@ should be recorded rather than left ambiguous.
 
 ## 2. Residual trigger observability
 
+> **COMPLETE — implemented in `e575ab7`.** Preserved below as the original problem
+> statement. The plugin now reports its extraction state and the gate persists a
+> `no_completion_assertion` decision (`reason_code: NO_COMPLETION_ASSERTION`) through the
+> existing single persistence path, with no agent-facing injection.
+> See [COMPLETION_TRIGGER_OBSERVABILITY_RECON.md](COMPLETION_TRIGGER_OBSERVABILITY_RECON.md)
+> and [CURRENT_STATE.md](CURRENT_STATE.md) §5.
+
 **Defect.** `.opencode/plugins/griller-gate.ts:393-397` — when a message contains no
 completion assertion, the gate logs to the application log and returns. **No decision
 record is written.** A skip is indistinguishable, in the record store, from a verification
@@ -53,27 +62,34 @@ silent.
 record **cannot be authored by the plugin**. Decision records are written by the
 `griller-gate` binary, and no subcommand records a non-event.
 
-**Scope before building.** Decide whether this is a new `GateStatus` variant, a new
-`EvidenceKind`, or a lifecycle event without a record. Each has a different blast radius
-against the 131 existing records and the `g1.0` schema.
+**How it was resolved.** The plugin reports the observation
+(`CompletionEvent.extraction`); the gate owns the meaning and writes the record through the
+existing `persist_decision` path. No new subcommand was needed, and no second record writer
+was created.
 
-**Depends on:** nothing. **Blocks:** item 5 (MCP exposure review) — an unobservable skip
-path is not something to expose to an agent.
+**Residual after the fix.** A skip is now recorded, but the trigger still uses a fixed
+verb/noun enumeration, so an unforeseen *phrasing* is still extracted as no-assertion —
+the difference is that this is now visible in the record store rather than silent.
 
-**Verification.** An end-to-end run producing a skip visible in the record store, plus a
-check that existing record parsing is unaffected.
+**Depends on:** nothing. **Blocked:** item 5 (MCP exposure review) — now unblocked on the
+record-structure question, but item 5 still depends on items 4 and 6.
 
 ---
 
 ## 3. `NO_COMPLETION_ASSERTION` record design
+
+> **COMPLETE — implemented in `e575ab7`.** The shape chosen was the first option
+> considered below: one new `GateStatus` variant plus a free-form `reason_code`, with no
+> schema-version bump and no new `EvidenceKind`.
 
 Separated from item 2 because it is a **design decision with schema consequences**, not an
 implementation. It is the concrete form of item 2's obstacle.
 
 **Depends on:** item 2's scope decision. **Blocks:** item 5.
 
-No `NO_COMPLETION_ASSERTION` record exists and none is proposed by this document. Naming
-the shape is the whole point of the item.
+**Resolved:** a `no_completion_assertion` record now exists and is produced by the gate.
+It required no schema-version bump (`g1.0` unchanged) and no migration of the 131 existing
+records, all of which still parse.
 
 ---
 
@@ -104,16 +120,19 @@ The component is currently unregistered: `griller` appears 0 times in
 `~/.config/opencode/opencode.jsonc`, and no `griller-gate` plugin is installed. Nothing can
 reach the trust boundary Phase 1.4 closed.
 
-> **MCP exposure remains BLOCKED until items 2, 3 and 4 are reviewed.** Re-registering the
-> gate is precisely what would make the unobservable skip path and the `WARN` semantics
-> reachable by an agent.
+> **MCP exposure remains BLOCKED.** Items 2 and 3 are now COMPLETE (`e575ab7`), so the
+> unobservable-skip half of this blocker is cleared. What remains is item 4 — the
+> `(Fact|Design, Unverifiable) → AlwaysWarn` policy question — plus the never-run e2e path
+> and the dead `gate.json` noted below. Re-registering the gate is what would make the
+> remaining `WARN` semantics reachable by an agent.
 
 The review must cover:
 
 - **Is the trust boundary sufficient?** Phase 1.4 closed the dirty-tree case. Confirm no
   other path lets `VERIFIED` describe uninspected code.
 - **The `WARN` trust tier** — item 4 above.
-- **Silent skips** — item 2 above.
+- **Silent skips** — item 2 above, now COMPLETE (`e575ab7`): a skip is recorded rather than
+  silent. What remains here is only the fixed-enumeration residual, not observability.
 - **The e2e path has never run.** `e2e_mock_opencode_griller.py` is broken as written
   (`timeout=30` against a 600 s budget). A live MCP round-trip is unverified. See
   [BASELINE_VERIFICATION.md](BASELINE_VERIFICATION.md).
